@@ -1,0 +1,11 @@
+.git
+.venv
+.pytest_cache
+.ruff_cache
+__pycache__
+*.pyc
+artifacts
+third_party
+new_roadmap.md
+new_roadmap_edits.md
+

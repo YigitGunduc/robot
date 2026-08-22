@@ -1,0 +1,20 @@
+<mujoco model="minimal_robot">
+  <option timestep="0.002" gravity="0 0 0"/>
+  <worldbody>
+    <body name="pelvis" pos="0 0 1">
+      <freejoint name="floating_base"/>
+      <geom type="sphere" size="0.05" mass="1"/>
+      <body name="link" pos="0 0 -0.1">
+        <joint name="joint" type="hinge" axis="0 1 0" range="-1 1"/>
+        <geom type="capsule" size="0.02" fromto="0 0 0 0 0 -0.2" mass="0.1"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <position name="joint_position" joint="joint" kp="20" ctrlrange="-1 1"/>
+  </actuator>
+  <keyframe>
+    <key name="stand" qpos="0 0 1 1 0 0 0 0.25"/>
+  </keyframe>
+</mujoco>
+

@@ -1,0 +1,33 @@
+services:
+  sim:
+    build:
+      context: .
+      dockerfile: docker/sim/Dockerfile
+      args:
+        MUJOCO_MENAGERIE_REF: ${MUJOCO_MENAGERIE_REF:-da76818e269b82289eba39808e2fb91d679d6994}
+    environment:
+      MUJOCO_GL: osmesa
+    command: ["sim-smoke", "--steps", "1000"]
+
+  sonic:
+    profiles: ["sonic"]
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: docker/sonic/Dockerfile
+      args:
+        SONIC_REF: ${SONIC_REF:-a0732b642c0333077e127a2f56ab0014c196bca4}
+        SONIC_TENSORRT_IMAGE: ${SONIC_TENSORRT_IMAGE:-nvcr.io/nvidia/tensorrt:25.08-py3}
+    gpus:
+      - driver: nvidia
+        count: all
+        capabilities: [gpu]
+    network_mode: host
+    ipc: host
+    stdin_open: true
+    tty: true
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,graphics
+      MUJOCO_GL: egl
+    command: ["preflight"]
