@@ -3,11 +3,17 @@
 ## Runtime contracts
 
 ```text
-ReasoningProvider.deliberate(RobotState) -> PhysicalIntent
-EmbodiedActor.act(RobotState, PhysicalIntent) -> ActuatorCommand
+ReasoningProvider.deliberate(MissionRequest, RobotState) -> PhysicalIntent
+EmbodiedActor.act(RobotState, PhysicalIntent) -> WholeBodyReference
+LowLevelController.compute(RobotState, WholeBodyReference) -> ActuatorCommand
 SafetySupervisor.filter(ActuatorCommand, RobotState) -> SafetyDecision
 SimulatorBackend.step(ActuatorCommand) -> RobotState
 ```
+
+`MissionRequest` is authored by a human or application. It is not itself a motor
+command. Vesta or another reasoning adapter owns the conversion into structured
+`PhysicalIntent`. Simple deployments may deliberately use `NoOpReasoner`, which
+passes the request through without claiming natural-language understanding.
 
 `ActuatorCommand` contains ordered actuator names and values. The simulator checks
 the names against the loaded model before stepping, which prevents silent joint-order
@@ -16,18 +22,19 @@ corruption.
 `RobotRuntime` owns the loop and is the only component that composes these contracts:
 
 ```text
-observe -> deliberate -> act -> safety -> simulate -> record
+request -> deliberate -> act -> control -> safety -> simulate -> record
 ```
 
-The initial `NoOpReasoner` and `ScriptedPoseActor` make this executable without a
-GPU. They are test doubles for orchestration, not substitutes for SONIC. The safety
-supervisor remains outside the actor so a future LLM, GR00T, or SONIC adapter cannot
-bypass actuator limits, rate limits, fall detection, or emergency stop.
+The initial `NoOpReasoner`, `ScriptedPoseActor`, and `JointPositionController` make
+this executable without a GPU. They occupy the future Vesta, GR00T, and SONIC slots,
+respectively, but are test doubles rather than learned substitutes. The safety
+supervisor remains outside them so none can bypass actuator limits, rate limits,
+fall detection, or emergency stop.
 
-Episodes are append-only directories. `manifest.json` captures intent, configuration,
-events, and termination; `episode.npz` captures state plus requested and applied
-commands. Requested and applied commands are both retained so safety interventions
-remain auditable.
+Episodes are append-only directories. `manifest.json` captures the original mission,
+planner intent, configuration, events, and termination. `episode.npz` captures state,
+whole-body references, and requested/applied actuator commands. Each boundary is
+retained so planner, actor, controller, and safety behavior remain auditable.
 
 SONIC is process-oriented rather than a Python `compute()` implementation. The
 official deployment owns its 50 Hz loop, TensorRT engines, observation layout, and

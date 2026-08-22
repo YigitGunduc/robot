@@ -9,11 +9,12 @@ from typing import Protocol
 
 from g1_stack.core.interfaces import (
     EmbodiedActor,
+    LowLevelController,
     ReasoningProvider,
     SafetySupervisor,
     SimulatorBackend,
 )
-from g1_stack.core.types import RobotState, SafetyDecision
+from g1_stack.core.types import MissionRequest, RobotState, SafetyDecision
 from g1_stack.data.episode import EpisodeRecorder
 
 
@@ -85,6 +86,7 @@ class RobotRuntime:
         simulator: SimulatorBackend,
         reasoner: ReasoningProvider,
         actor: EmbodiedActor,
+        controller: LowLevelController,
         safety: SafetySupervisor,
         recorder: EpisodeRecorder,
         *,
@@ -93,6 +95,7 @@ class RobotRuntime:
         self.simulator = simulator
         self.reasoner = reasoner
         self.actor = actor
+        self.controller = controller
         self.safety = safety
         self.recorder = recorder
         self.control = control or RuntimeControl()
@@ -101,14 +104,22 @@ class RobotRuntime:
         self,
         config: RunConfig,
         *,
+        request: MissionRequest | None = None,
         viewer: RuntimeViewer | None = None,
         on_step: Callable[[RobotState, SafetyDecision, int], None] | None = None,
     ) -> RunSummary:
+        mission = request or MissionRequest("execute scripted pose demonstration")
         state = self.simulator.reset(seed=config.seed, keyframe=config.keyframe)
-        intent = self.reasoner.deliberate(state)
+        intent = self.reasoner.deliberate(mission, state)
         self.actor.reset(state, intent)
+        self.controller.reset(state)
         self.safety.reset(state)
-        episode_path = self.recorder.start(state, intent, configuration=asdict(config))
+        episode_path = self.recorder.start(
+            state,
+            mission,
+            intent,
+            configuration=asdict(config),
+        )
         steps = 0
         safety_interventions = 0
         success = False
@@ -130,8 +141,9 @@ class RobotRuntime:
                     break
                 if reset_requested:
                     state = self.simulator.reset(seed=config.seed, keyframe=config.keyframe)
-                    intent = self.reasoner.deliberate(state)
+                    intent = self.reasoner.deliberate(mission, state)
                     self.actor.reset(state, intent)
+                    self.controller.reset(state)
                     self.safety.reset(state)
                     self.recorder.event("reset", step=steps)
                     next_tick = time.perf_counter()
@@ -143,7 +155,8 @@ class RobotRuntime:
                     next_tick = time.perf_counter()
                     continue
 
-                requested = self.actor.act(state, intent)
+                reference = self.actor.act(state, intent)
+                requested = self.controller.compute(state, reference)
                 decision = self.safety.filter(requested, state, dt_s=control_dt_s)
                 if decision.limited_actuators or decision.stopped:
                     safety_interventions += 1
@@ -153,7 +166,7 @@ class RobotRuntime:
                     break
 
                 state = self.simulator.step(decision.command, frame_skip=config.frame_skip)
-                self.recorder.record(state, requested, decision)
+                self.recorder.record(state, reference, requested, decision)
                 steps += 1
                 if on_step is not None:
                     on_step(state, decision, steps)

@@ -9,6 +9,8 @@ from pathlib import Path
 
 from g1_stack.actors.scripted_pose import ScriptedPoseActor
 from g1_stack.controllers.hold_position import HoldPositionController
+from g1_stack.controllers.joint_position import JointPositionController
+from g1_stack.core.types import MissionRequest
 from g1_stack.data.episode import EpisodeRecorder, load_episode
 from g1_stack.reasoning.noop import NoOpReasoner
 from g1_stack.runtime.robot_runtime import RobotRuntime, RunConfig, RuntimeControl
@@ -85,7 +87,7 @@ def _sim_run(args: argparse.Namespace) -> int:
     config = MujocoConfig(model_path=model_path, timestep_s=args.timestep)
     with MujocoBackend(config) as backend:
         actor = ScriptedPoseActor()
-        reasoner = NoOpReasoner(objective=args.objective)
+        reasoner = NoOpReasoner()
         lower, upper = backend.actuator_control_bounds
         safety = JointLimitSafety(
             backend.actuator_names,
@@ -100,6 +102,7 @@ def _sim_run(args: argparse.Namespace) -> int:
             backend,
             reasoner,
             actor,
+            JointPositionController(),
             safety,
             recorder,
             control=control,
@@ -158,7 +161,12 @@ def _sim_run(args: argparse.Namespace) -> int:
                 "5 crouch | space pause | r reset | e emergency stop | q quit"
             )
         with viewer_context as viewer:
-            summary = runtime.run(run_config, viewer=viewer, on_step=show_status)
+            summary = runtime.run(
+                run_config,
+                request=MissionRequest(args.objective),
+                viewer=viewer,
+                on_step=show_status,
+            )
 
     print(
         f"run_complete success={summary.success} steps={summary.steps} "

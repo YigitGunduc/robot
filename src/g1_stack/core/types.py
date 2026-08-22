@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from numpy.typing import NDArray
@@ -35,8 +35,21 @@ class ActuatorCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class MissionRequest:
+    """Human- or application-authored request presented to a reasoner."""
+
+    text: str
+    constraints: tuple[str, ...] = ()
+    request_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.text.strip():
+            raise ValueError("MissionRequest.text cannot be empty")
+
+
+@dataclass(frozen=True, slots=True)
 class PhysicalIntent:
-    """Structured high-level directive consumed by an embodied actor."""
+    """Planner-authored structured directive consumed by an embodied actor."""
 
     objective: str
     constraints: tuple[str, ...] = ()
@@ -48,6 +61,40 @@ class PhysicalIntent:
             raise ValueError("PhysicalIntent.objective cannot be empty")
         if not 0.0 <= self.confidence <= 1.0:
             raise ValueError("PhysicalIntent.confidence must be between 0 and 1")
+
+
+@dataclass(frozen=True, slots=True)
+class WholeBodyReference:
+    """Backend-neutral physical reference produced by an embodied actor.
+
+    Version one carries complete joint-position targets plus optional desired base
+    velocity. A SONIC adapter may use both as policy conditioning rather than
+    forwarding the joint targets directly.
+    """
+
+    joint_names: tuple[str, ...]
+    joint_position_targets: FloatArray
+    base_linear_velocity_body_m_s: FloatArray = field(default_factory=lambda: np.zeros(3))
+    base_angular_velocity_body_rad_s: FloatArray = field(default_factory=lambda: np.zeros(3))
+    confidence: float = 1.0
+
+    def __post_init__(self) -> None:
+        positions = _frozen_float_array(self.joint_position_targets)
+        linear_velocity = _frozen_float_array(self.base_linear_velocity_body_m_s)
+        angular_velocity = _frozen_float_array(self.base_angular_velocity_body_rad_s)
+        if positions.ndim != 1:
+            raise ValueError("WholeBodyReference.joint_position_targets must be one-dimensional")
+        if len(self.joint_names) != positions.size:
+            raise ValueError("Whole-body joint names and targets must have equal length")
+        if len(set(self.joint_names)) != len(self.joint_names):
+            raise ValueError("Whole-body joint names must be unique")
+        if linear_velocity.shape != (3,) or angular_velocity.shape != (3,):
+            raise ValueError("Whole-body base velocities must have shape (3,)")
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("WholeBodyReference.confidence must be between 0 and 1")
+        object.__setattr__(self, "joint_position_targets", positions)
+        object.__setattr__(self, "base_linear_velocity_body_m_s", linear_velocity)
+        object.__setattr__(self, "base_angular_velocity_body_rad_s", angular_velocity)
 
 
 @dataclass(frozen=True, slots=True)

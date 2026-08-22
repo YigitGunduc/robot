@@ -5,7 +5,7 @@ from threading import Lock
 
 import numpy as np
 
-from g1_stack.core.types import ActuatorCommand, PhysicalIntent, RobotState
+from g1_stack.core.types import PhysicalIntent, RobotState, WholeBodyReference
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,7 +114,7 @@ class ScriptedPoseActor:
         with self._lock:
             self._pending_pose = "__auto__"
 
-    def act(self, state: RobotState, intent: PhysicalIntent) -> ActuatorCommand:
+    def act(self, state: RobotState, intent: PhysicalIntent) -> WholeBodyReference:
         del intent
         if self._base is None:
             raise RuntimeError("ScriptedPoseActor.reset() must be called first")
@@ -133,7 +133,10 @@ class ScriptedPoseActor:
             self._manual_start_time_s = state.time_s
 
         values = self._target_at(state.time_s)
-        return ActuatorCommand(names=state.actuator_names, values=values)
+        return WholeBodyReference(
+            joint_names=state.actuator_names,
+            joint_position_targets=values,
+        )
 
     def _take_pending_pose(self) -> str | None:
         with self._lock:

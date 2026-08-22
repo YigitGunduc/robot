@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 
 from g1_stack.actors.scripted_pose import ScriptedPoseActor
+from g1_stack.controllers.joint_position import JointPositionController
+from g1_stack.core.types import MissionRequest
 from g1_stack.data.episode import EpisodeRecorder
 from g1_stack.reasoning.noop import NoOpReasoner
 from g1_stack.runtime.robot_runtime import RobotRuntime, RunConfig
@@ -106,8 +108,9 @@ def main() -> int:
         lower, upper = backend.actuator_control_bounds
         runtime = RobotRuntime(
             backend,
-            NoOpReasoner("render scripted G1 pose demonstration"),
+            NoOpReasoner(),
             ScriptedPoseActor(),
+            JointPositionController(),
             JointLimitSafety(backend.actuator_names, lower, upper),
             EpisodeRecorder(Path("artifacts/episodes"), label="video-demo"),
         )
@@ -125,6 +128,7 @@ def main() -> int:
         try:
             summary = runtime.run(
                 RunConfig(max_steps=max_steps, frame_skip=frame_skip, keyframe="stand"),
+                request=MissionRequest("render scripted G1 pose demonstration"),
                 on_step=capture,
             )
         finally:

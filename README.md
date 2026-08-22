@@ -6,9 +6,17 @@ separates our application from NVIDIA SONIC and from any particular simulator.
 The first runnable vertical slice is:
 
 ```text
-NoOpReasoner -> PhysicalIntent -> ScriptedPoseActor -> JointLimitSafety
-                                                      |
-EpisodeRecorder <- RobotState <- MujocoBackend <- ActuatorCommand
+MissionRequest -> NoOpReasoner -> PhysicalIntent -> ScriptedPoseActor
+                                                        |
+                                              WholeBodyReference
+                                                        |
+                                             JointPositionController
+                                                        |
+                                                ActuatorCommand
+                                                        |
+                                               JointLimitSafety
+                                                        |
+EpisodeRecorder <- RobotState <- MujocoBackend <--------+
 ```
 
 This is deliberately a simple actor, not SONIC pretending to run on a CPU. It lets
@@ -49,8 +57,9 @@ uv run g1-stack sim-smoke --model /absolute/path/to/scene.xml --keyframe stand
 
 ## Interactive runtime
 
-The runtime observes state, creates structured intent, asks the actor for a complete
-joint target, applies independent position/rate/fall safety, steps MuJoCo, and records
+The runtime accepts a human/application `MissionRequest`, creates structured intent,
+asks the actor for a whole-body reference, converts that through a low-level
+controller, applies independent position/rate/fall safety, steps MuJoCo, and records
 the episode. Run the desktop viewer on macOS through MuJoCo's `mjpython` launcher:
 
 ```bash
@@ -75,13 +84,21 @@ Every `sim-run` creates a new directory under `artifacts/episodes` containing
 uv run g1-stack episode-info artifacts/episodes/<episode-directory>
 ```
 
-The Python seam is intentionally explicit. A custom reasoner (including an LLM
-adapter) implements `deliberate(state) -> PhysicalIntent`; a custom body actor
-implements `reset(state, intent)` and `act(state, intent) -> ActuatorCommand`.
-`RobotRuntime` composes either implementation with the simulator, safety supervisor,
-and recorder. Application code can also call `ScriptedPoseActor.request_pose()` for
-direct local testing. This provides full orchestration control without allowing an
-LLM to bypass the safety layer.
+The Python seams are intentionally explicit:
+
+```text
+ReasoningProvider.deliberate(MissionRequest, RobotState) -> PhysicalIntent
+EmbodiedActor.act(RobotState, PhysicalIntent) -> WholeBodyReference
+LowLevelController.compute(RobotState, WholeBodyReference) -> ActuatorCommand
+```
+
+`MissionRequest` is the human/application side of the boundary. The current
+`NoOpReasoner` only passes its text through; it does not understand natural language.
+A future Vesta/LLM adapter replaces that component. The current
+`JointPositionController` forwards the actor's complete position reference; a future
+SONIC adapter replaces that component. `RobotRuntime` composes all layers with the
+simulator, safety supervisor, and recorder without allowing a reasoner or actor to
+bypass safety.
 
 ## CPU simulation container
 
@@ -150,8 +167,10 @@ service with Docker support rather than assuming Colab can run it.
 ## Boundaries
 
 - `SimulatorBackend` owns simulation lifecycle and state extraction.
-- `ReasoningProvider` turns observations into a backend-neutral `PhysicalIntent`.
-- `EmbodiedActor` turns state plus intent into an ordered actuator command.
+- `MissionRequest` carries human/application language and explicit constraints.
+- `ReasoningProvider` turns the request and observations into `PhysicalIntent`.
+- `EmbodiedActor` turns state plus intent into `WholeBodyReference` (GR00T's slot).
+- `LowLevelController` turns that reference into `ActuatorCommand` (SONIC's slot).
 - `SafetySupervisor` independently limits or vetoes every command.
 - `EpisodeRecorder` writes replayable arrays and a human-readable manifest.
 - `SonicProcessAdapter` validates and describes the pinned official SONIC runtime.

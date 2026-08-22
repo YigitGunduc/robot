@@ -9,7 +9,14 @@ from uuid import uuid4
 
 import numpy as np
 
-from g1_stack.core.types import ActuatorCommand, PhysicalIntent, RobotState, SafetyDecision
+from g1_stack.core.types import (
+    ActuatorCommand,
+    MissionRequest,
+    PhysicalIntent,
+    RobotState,
+    SafetyDecision,
+    WholeBodyReference,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +39,7 @@ class EpisodeRecorder:
     def start(
         self,
         state: RobotState,
+        request: MissionRequest,
         intent: PhysicalIntent,
         *,
         configuration: dict[str, Any],
@@ -45,6 +53,7 @@ class EpisodeRecorder:
             "schema_version": 1,
             "created_at": datetime.now(UTC).isoformat(),
             "actuator_names": list(state.actuator_names),
+            "mission_request": asdict(request),
             "intent": asdict(intent),
             "configuration": configuration,
             "events": [],
@@ -59,6 +68,9 @@ class EpisodeRecorder:
             "base_position": [],
             "base_quaternion_wxyz": [],
             "contact_count": [],
+            "reference_joint_positions": [],
+            "reference_base_linear_velocity_body_m_s": [],
+            "reference_base_angular_velocity_body_rad_s": [],
             "requested_command": [],
             "applied_command": [],
             "limited": [],
@@ -69,12 +81,14 @@ class EpisodeRecorder:
     def record(
         self,
         state: RobotState,
+        reference: WholeBodyReference,
         requested: ActuatorCommand,
         decision: SafetyDecision,
     ) -> None:
         self._require_started()
         if (
-            requested.names != state.actuator_names
+            reference.joint_names != state.actuator_names
+            or requested.names != state.actuator_names
             or decision.command.names != state.actuator_names
         ):
             raise ValueError("Recorded commands must match state actuator order")
@@ -87,6 +101,13 @@ class EpisodeRecorder:
         self._rows["base_position"].append(state.base_position)
         self._rows["base_quaternion_wxyz"].append(state.base_quaternion_wxyz)
         self._rows["contact_count"].append(state.contact_count)
+        self._rows["reference_joint_positions"].append(reference.joint_position_targets)
+        self._rows["reference_base_linear_velocity_body_m_s"].append(
+            reference.base_linear_velocity_body_m_s
+        )
+        self._rows["reference_base_angular_velocity_body_rad_s"].append(
+            reference.base_angular_velocity_body_rad_s
+        )
         self._rows["requested_command"].append(requested.values)
         self._rows["applied_command"].append(decision.command.values)
         self._rows["limited"].append(bool(decision.limited_actuators))

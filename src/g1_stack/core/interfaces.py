@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from g1_stack.core.types import ActuatorCommand, PhysicalIntent, RobotState, SafetyDecision
+from g1_stack.core.types import (
+    ActuatorCommand,
+    MissionRequest,
+    PhysicalIntent,
+    RobotState,
+    SafetyDecision,
+    WholeBodyReference,
+)
 
 
 @runtime_checkable
@@ -21,22 +28,24 @@ class SimulatorBackend(Protocol):
 
 
 @runtime_checkable
-class ControllerBackend(Protocol):
+class LowLevelController(Protocol):
     def reset(self, state: RobotState) -> None: ...
 
-    def compute(self, state: RobotState) -> ActuatorCommand: ...
+    def compute(
+        self, state: RobotState, reference: WholeBodyReference
+    ) -> ActuatorCommand: ...
 
 
 @runtime_checkable
 class EmbodiedActor(Protocol):
     def reset(self, state: RobotState, intent: PhysicalIntent) -> None: ...
 
-    def act(self, state: RobotState, intent: PhysicalIntent) -> ActuatorCommand: ...
+    def act(self, state: RobotState, intent: PhysicalIntent) -> WholeBodyReference: ...
 
 
 @runtime_checkable
 class ReasoningProvider(Protocol):
-    def deliberate(self, state: RobotState) -> PhysicalIntent: ...
+    def deliberate(self, request: MissionRequest, state: RobotState) -> PhysicalIntent: ...
 
 
 @runtime_checkable
