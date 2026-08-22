@@ -120,18 +120,22 @@ and run the native setup instead:
 ./scripts/colab_sim_setup.sh
 ```
 
-## SONIC inference container
+## Unified SONIC Ubuntu application container
 
-The SONIC image is intentionally separate from the portable simulation image. It is
-for a remote x86_64 Ubuntu host with an NVIDIA GPU and NVIDIA Container Toolkit. It
-pins:
+Docker is the execution environment for the complete SONIC application; host Python
+does not launch or call Docker. The image contains this repository, the pinned
+official SONIC checkout, its C++ inference deployment, TensorRT/CUDA, and the
+official MuJoCo bridge. It targets a remote x86_64 Ubuntu host with an NVIDIA GPU and
+NVIDIA Container Toolkit, and pins:
 
 - NVIDIA CUDA/TensorRT image `25.08-py3` (TensorRT 10.13.2)
 - `GR00T-WholeBodyControl` to the commit in `upstream.env`
 - the official SONIC deployment build produced by that commit
 
-It also downloads the matching public deployment checkpoint during the image build
-and records a SHA-256 manifest at `/opt/sonic-model.sha256`.
+It downloads the matching public deployment checkpoint during the image build and
+records a SHA-256 manifest at `/opt/sonic-model.sha256`. Expensive upstream layers
+are built before this repository's source is copied, so application-only changes can
+reuse Docker's SONIC/TensorRT cache.
 
 Build and verify it on the NVIDIA host:
 
@@ -140,22 +144,45 @@ docker compose --profile sonic build sonic
 docker compose --profile sonic run --rm sonic preflight
 ```
 
-Open a prepared shell:
+Start the complete application with one command:
+
+```bash
+docker compose --profile sonic run --rm sonic
+```
+
+The project-owned launcher supervises the official MuJoCo G1 bridge and official C++
+TensorRT SONIC controller inside that one container. The pinned upstream deployment
+asks for confirmation; press Enter after the simulator starts. Its keyboard input
+then remains attached to the same terminal. Host networking is enabled for Unitree
+DDS.
+
+For the on-screen official simulator, allow Docker to access the Ubuntu host's X
+server. The compose file forwards `DISPLAY` and mounts the X11 socket. On a headless
+GPU host:
+
+```bash
+SONIC_HEADLESS=1 docker compose --profile sonic run --rm sonic
+```
+
+Headless mode validates the process and inference lifecycle, but the official
+keyboard tutorial currently uses a simulator-window key to drop the robot. Complete
+interactive keyboard evaluation therefore still needs a visible simulator until we
+expose that action programmatically.
+
+Useful debugging commands run in the same image:
 
 ```bash
 docker compose --profile sonic run --rm sonic shell
-```
-
-Run the official MuJoCo simulator and SONIC deploy in separate terminals. Host
-networking is required for the Unitree DDS simulation transport:
-
-```bash
-# Terminal 1
+docker compose --profile sonic run --rm sonic local-sim --duration 5
+docker compose --profile sonic run --rm sonic g1-stack sim-info
 docker compose --profile sonic run --rm sonic official-sim
-
-# Terminal 2
 docker compose --profile sonic run --rm sonic sonic-deploy --input-type keyboard sim
 ```
+
+The final two commands preserve the split workflow only for diagnosis. Normal use is
+the single default `app` command. Application source is mounted read-only at
+`/workspace/g1-stack/src`, and generated episodes/videos persist through the
+`artifacts` mount.
 
 These commands are Linux/NVIDIA targets. They are not expected to run on this Mac.
 The local `MujocoBackend` remains the portable development and contract-test backend.

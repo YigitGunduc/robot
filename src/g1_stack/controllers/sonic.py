@@ -13,6 +13,16 @@ class SonicRuntimeConfig:
     input_type: str = "keyboard"
     target: str = "sim"
 
+    @classmethod
+    def from_environment(cls) -> SonicRuntimeConfig:
+        """Resolve the pinned runtime installed inside the unified container."""
+        return cls(
+            root=Path(os.environ.get("SONIC_ROOT", "/opt/GR00T-WholeBodyControl")),
+            expected_ref=os.environ.get("SONIC_REF", ""),
+            input_type=os.environ.get("SONIC_INPUT_TYPE", "keyboard"),
+            target=os.environ.get("SONIC_TARGET", "sim"),
+        )
+
 
 class SonicProcessAdapter:
     """Boundary around the official process-based SONIC deployment.
@@ -38,7 +48,7 @@ class SonicProcessAdapter:
         if missing:
             raise FileNotFoundError("SONIC checkout is incomplete: " + ", ".join(missing))
 
-        if check_git_ref:
+        if check_git_ref and self.config.expected_ref:
             result = subprocess.run(
                 ["git", "rev-parse", "HEAD"],
                 cwd=self.config.root,
@@ -72,4 +82,3 @@ class SonicProcessAdapter:
         environment = os.environ.copy()
         environment.setdefault("TensorRT_ROOT", "/opt/TensorRT")
         return environment
-

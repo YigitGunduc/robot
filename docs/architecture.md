@@ -42,6 +42,31 @@ Unitree transport. `SonicProcessAdapter` validates that external compatibility u
 and provides deterministic launch commands. A future in-process SONIC adapter must
 pass parity tests against this reference before becoming selectable.
 
+## Unified SONIC container boundary
+
+Docker is a deployment boundary, not an application API. Host-side project Python
+never invokes Docker. The Ubuntu/NVIDIA image installs this repository and the
+pinned official SONIC compatibility unit together, then a project-owned launcher
+supervises both official runtime processes:
+
+```text
+Ubuntu/NVIDIA container
+  /workspace/g1-stack                 this application and its Python contracts
+  /opt/GR00T-WholeBodyControl         pinned upstream SONIC compatibility unit
+    official MuJoCo bridge            process 1
+    official C++ TensorRT deployment  process 2
+```
+
+The container entry point uses `tini`, and the stack launcher creates a separate
+process group for the simulator so shutdown also terminates simulator children. The
+official checkpoint, observation config, planner, source revision, and TensorRT
+version are validated before the app starts. Normal source edits do not rebuild the
+expensive upstream layers.
+
+This is the Stage 2 reference path: SONIC controls its official simulator without
+GR00T or Vesta. Later, the planner and actor will run inside the same image and use
+SONIC's validated manager input rather than creating a host-to-container control API.
+
 ## Gate 1: simulator
 
 - G1 MJCF loads from a pinned asset revision.

@@ -30,4 +30,13 @@ services:
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility,graphics
       MUJOCO_GL: egl
-    command: ["preflight"]
+      DISPLAY: ${DISPLAY:-}
+      QT_X11_NO_MITSHM: "1"
+      SONIC_REQUIRE_GPU: ${SONIC_REQUIRE_GPU:-1}
+      SONIC_HEADLESS: ${SONIC_HEADLESS:-0}
+      SONIC_INPUT_TYPE: ${SONIC_INPUT_TYPE:-keyboard}
+    volumes:
+      - ./src:/workspace/g1-stack/src:ro
+      - ./artifacts:/workspace/g1-stack/artifacts
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    command: ["app"]

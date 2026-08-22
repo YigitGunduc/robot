@@ -19,3 +19,16 @@ def test_sonic_commands_keep_official_runtime_external() -> None:
         "keyboard",
         "sim",
     )
+
+
+def test_sonic_container_config_comes_from_environment(monkeypatch) -> None:
+    monkeypatch.setenv("SONIC_ROOT", "/opt/pinned-sonic")
+    monkeypatch.setenv("SONIC_REF", "deadbeef")
+    monkeypatch.setenv("SONIC_INPUT_TYPE", "zmq_manager")
+
+    config = SonicRuntimeConfig.from_environment()
+
+    assert config.root == Path("/opt/pinned-sonic")
+    assert config.expected_ref == "deadbeef"
+    assert config.input_type == "zmq_manager"
+    assert config.target == "sim"

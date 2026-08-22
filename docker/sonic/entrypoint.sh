@@ -3,6 +3,7 @@ set -euo pipefail
 
 SONIC_ROOT="${SONIC_ROOT:-/opt/GR00T-WholeBodyControl}"
 DEPLOY_ROOT="$SONIC_ROOT/gear_sonic_deploy"
+APP_ROOT="${APP_ROOT:-/workspace/g1-stack}"
 
 source "$DEPLOY_ROOT/scripts/setup_env.sh" >/dev/null
 
@@ -16,7 +17,13 @@ preflight() {
   fi
   test -x "$DEPLOY_ROOT/deploy.sh"
   test -f "$TensorRT_ROOT/include/NvInferVersion.h"
-  test -f "$SONIC_ROOT/policy/release/model_decoder.onnx"
+  test -x /usr/local/bin/sonic-stack
+  command -v g1-stack >/dev/null
+  test -f "$DEPLOY_ROOT/policy/release/model_decoder.onnx"
+  test -f "$DEPLOY_ROOT/policy/release/model_encoder.onnx"
+  test -f "$DEPLOY_ROOT/policy/release/observation_config.yaml"
+  test -f "$DEPLOY_ROOT/planner/target_vel/V2/planner_sonic.onnx"
+  test -s /opt/sonic-model.sha256
 
   local trt_major trt_minor
   trt_major="$(awk '/#define NV_TENSORRT_MAJOR/ {print $3}' "$TensorRT_ROOT/include/NvInferVersion.h")"
@@ -30,17 +37,26 @@ preflight() {
   echo "sonic_ref=$actual_ref"
   echo "tensorrt=$trt_major.$trt_minor"
   echo "model_manifest=/opt/sonic-model.sha256"
-  if command -v nvidia-smi >/dev/null 2>&1; then
+  if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
     nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
+  elif [[ "${SONIC_REQUIRE_GPU:-1}" == "1" ]]; then
+    echo "NVIDIA GPU runtime is required but was not attached" >&2
+    exit 3
   else
-    echo "warning: nvidia-smi is unavailable; GPU runtime was not attached" >&2
+    echo "warning: GPU check skipped; inference cannot run" >&2
   fi
+
+  python -c "import g1_stack; print('g1_stack=' + g1_stack.__version__)"
 }
 
 command="${1:-preflight}"
 shift || true
 
 case "$command" in
+  app|stack)
+    preflight
+    exec /usr/local/bin/sonic-stack "$@"
+    ;;
   preflight)
     preflight
     ;;
@@ -56,6 +72,14 @@ case "$command" in
     preflight
     cd "$DEPLOY_ROOT"
     exec ./deploy.sh "$@"
+    ;;
+  local-sim)
+    cd "$APP_ROOT"
+    exec g1-stack sim-run "$@"
+    ;;
+  g1-stack)
+    cd "$APP_ROOT"
+    exec g1-stack "$@"
     ;;
   *)
     exec "$command" "$@"
