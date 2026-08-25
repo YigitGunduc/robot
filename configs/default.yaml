@@ -1,0 +1,45 @@
+sonic:
+  dof: 29
+  token_dim: 64
+  token_groups: 2
+  fsq_levels: 32
+  future_frames: 10
+  future_stride: 5
+  prop_history: 10
+  action_scale: 0.5
+
+ppo:
+  num_envs: 512
+  rollout_steps: 32
+  ppo_epochs: 5
+  minibatches: 4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip: 0.2
+  entropy_coef: 0.013
+  actor_lr: 2.0e-5
+  critic_lr: 1.0e-3
+  aux_recon_coef: 0.01
+  target_kl: 0.01
+
+flow:
+  action_dim: 64
+  action_horizon: 40
+  model_dim: 256
+  num_layers: 4
+  num_heads: 8
+  inference_steps: 4
+  beta_alpha: 1.5
+  beta_beta: 1.0
+
+sim:
+  physics_dt: 0.005
+  decimation: 4
+  device: cuda:0
+  nconmax: 48
+  njmax: 288
+
+replay:
+  control_hz: 50
+  camera_hz: 10
+  save_rgb: false
