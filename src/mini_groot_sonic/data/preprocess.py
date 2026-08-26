@@ -42,17 +42,35 @@ def precompute_mujoco_kinematics(clip: BonesClip, mjcf: str | Path, joint_names:
     body_quat = np.zeros((t, len(body_ids), 4), np.float32)
     body_linvel = np.zeros((t, len(body_ids), 3), np.float32)
     body_angvel = np.zeros((t, len(body_ids), 3), np.float32)
+    root_linvel = np.zeros((t, 3), np.float32)
+    root_angvel = np.zeros((t, 3), np.float32)
+
+    qpos_track = np.repeat(model.qpos0[None], t, axis=0)
+    qpos_track[:, rq : rq + 3] = clip.root_pos
+    qpos_track[:, rq + 3 : rq + 7] = clip.root_quat
+    qpos_track[:, joint_qpos] = clip.joint_pos
+
+    # Let MuJoCo differentiate quaternion coordinates using its own tangent-space
+    # convention. Central differences are used away from the boundaries.
+    differentiated = np.zeros((t, model.nv), np.float64)
+    for i in range(t):
+        lo = max(0, i - 1)
+        hi = min(t - 1, i + 1)
+        if lo != hi:
+            mujoco.mj_differentiatePos(
+                model,
+                differentiated[i],
+                (hi - lo) / clip.fps,
+                qpos_track[lo],
+                qpos_track[hi],
+            )
+    root_linvel[:] = differentiated[:, rv : rv + 3]
+    root_angvel[:] = differentiated[:, rv + 3 : rv + 6]
 
     for i in range(t):
-        data.qpos[:] = model.qpos0
-        data.qvel[:] = 0
-        data.qpos[rq : rq + 3] = clip.root_pos[i]
-        data.qpos[rq + 3 : rq + 7] = clip.root_quat[i]
-        data.qpos[joint_qpos] = clip.joint_pos[i]
+        data.qpos[:] = qpos_track[i]
+        data.qvel[:] = differentiated[i]
         data.qvel[joint_dof] = clip.joint_vel[i]
-        if i > 0:
-            dt = 1.0 / clip.fps
-            data.qvel[rv : rv + 3] = (clip.root_pos[i] - clip.root_pos[i - 1]) / dt
         mujoco.mj_forward(model, data)
         body_pos[i] = data.xpos[body_ids]
         body_quat[i] = data.xquat[body_ids]
@@ -64,6 +82,8 @@ def precompute_mujoco_kinematics(clip: BonesClip, mjcf: str | Path, joint_names:
         "joint_vel": clip.joint_vel,
         "root_pos": clip.root_pos,
         "root_quat": clip.root_quat,
+        "root_linvel": root_linvel,
+        "root_angvel": root_angvel,
         "body_pos": body_pos,
         "body_quat": body_quat,
         "body_linvel": body_linvel,

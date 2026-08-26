@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import torch
 from torch import nn
-from torch.distributions import Normal
+from torch.distributions import Normal, TanhTransform, TransformedDistribution
 
 from mini_groot_sonic.config import GoalConfig, SonicTinyConfig
 from mini_groot_sonic.models.common import mlp
@@ -54,12 +54,15 @@ class TinySonicPolicy(nn.Module):
             cfg.dof,
         )
         self.kinematic_decoder = mlp(cfg.token_dim, cfg.recon_hidden, cfg.reference_dim)
+        self.register_buffer("reference_mean", torch.zeros(cfg.reference_dim))
+        self.register_buffer("reference_std", torch.ones(cfg.reference_dim))
         self.log_std = nn.Parameter(torch.full((cfg.dof,), float(torch.log(torch.tensor(cfg.init_action_std)))))
         self.goal_encoder = SparseGoalEncoder(goal_cfg, cfg.token_dim) if goal_cfg is not None else None
 
     def encode_reference(self, future_reference: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        # [B, F, 2*dof] or [B, reference_dim]
+        # [B, F, reference_frame_dim] or [B, reference_dim]
         x = future_reference.flatten(1)
+        x = (x - self.reference_mean) / self.reference_std.clamp_min(1e-4)
         latent = self.reference_encoder(x)
         token, indices = self.quantizer(latent)
         return token, indices, latent
@@ -72,6 +75,17 @@ class TinySonicPolicy(nn.Module):
 
     def project_external_token(self, token: torch.Tensor) -> torch.Tensor:
         return self.quantizer.project(token)
+
+    @torch.no_grad()
+    def set_reference_stats(self, mean: torch.Tensor, std: torch.Tensor) -> None:
+        if mean.shape != self.reference_mean.shape or std.shape != self.reference_std.shape:
+            raise ValueError("reference normalization statistics have the wrong shape")
+        self.reference_mean.copy_(mean)
+        self.reference_std.copy_(std.clamp_min(1e-4))
+
+    def normalize_reference(self, future_reference: torch.Tensor) -> torch.Tensor:
+        flat = future_reference.flatten(1)
+        return (flat - self.reference_mean) / self.reference_std.clamp_min(1e-4)
 
     def forward(
         self,
@@ -91,9 +105,9 @@ class TinySonicPolicy(nn.Module):
         reconstruction = self.reconstruct_token(token)
         return SonicOutput(action_mean, token, indices, reconstruction)
 
-    def distribution(self, action_mean: torch.Tensor) -> Normal:
+    def distribution(self, action_mean: torch.Tensor) -> TransformedDistribution:
         std = self.log_std.exp().clamp(self.cfg.min_action_std, self.cfg.max_action_std)
-        return Normal(action_mean, std)
+        return TransformedDistribution(Normal(action_mean, std), [TanhTransform(cache_size=1)])
 
     @torch.no_grad()
     def act_deterministic(
@@ -103,13 +117,32 @@ class TinySonicPolicy(nn.Module):
         goal_targets: torch.Tensor | None = None,
         goal_masks: torch.Tensor | None = None,
     ) -> SonicOutput:
-        return self(proprio_history, future_reference, goal_targets, goal_masks)
+        out = self(proprio_history, future_reference, goal_targets, goal_masks)
+        out.action_mean = torch.tanh(out.action_mean)
+        return out
 
 
 class TinySonicCritic(nn.Module):
     def __init__(self, cfg: SonicTinyConfig):
         super().__init__()
-        self.net = mlp(cfg.proprio_dim + cfg.reference_dim, cfg.critic_hidden, 1)
+        self.net = mlp(
+            cfg.proprio_dim + cfg.reference_dim + cfg.critic_privileged_dim,
+            cfg.critic_hidden,
+            1,
+        )
+        self.register_buffer("reference_mean", torch.zeros(cfg.reference_dim))
+        self.register_buffer("reference_std", torch.ones(cfg.reference_dim))
 
-    def forward(self, proprio_history: torch.Tensor, future_reference: torch.Tensor) -> torch.Tensor:
-        return self.net(torch.cat([proprio_history, future_reference.flatten(1)], dim=-1)).squeeze(-1)
+    @torch.no_grad()
+    def set_reference_stats(self, mean: torch.Tensor, std: torch.Tensor) -> None:
+        self.reference_mean.copy_(mean)
+        self.reference_std.copy_(std.clamp_min(1e-4))
+
+    def forward(
+        self,
+        proprio_history: torch.Tensor,
+        future_reference: torch.Tensor,
+        privileged: torch.Tensor,
+    ) -> torch.Tensor:
+        reference = (future_reference.flatten(1) - self.reference_mean) / self.reference_std
+        return self.net(torch.cat([proprio_history, reference, privileged], dim=-1)).squeeze(-1)

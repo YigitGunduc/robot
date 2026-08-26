@@ -5,7 +5,12 @@ from dataclasses import dataclass
 import torch
 
 from mini_groot_sonic.config import RewardConfig
-from mini_groot_sonic.sim.math_utils import quat_conjugate, quat_distance_angle, quat_mul, quat_rotate_inverse
+from mini_groot_sonic.sim.math_utils import (
+    quat_conjugate,
+    quat_distance_angle,
+    quat_mul,
+    quat_rotate_inverse,
+)
 
 
 def exp_reward(error_sq: torch.Tensor, std: float) -> torch.Tensor:
@@ -26,7 +31,13 @@ class RewardOutput:
 class SonicStyleReward:
     """Compact implementation of the published SONIC tracking reward composition."""
 
-    def __init__(self, cfg: RewardConfig, body_names: list[str], keypoint_names: list[str]):
+    def __init__(
+        self,
+        cfg: RewardConfig,
+        body_names: list[str],
+        keypoint_names: list[str],
+        joint_names: list[str] | None = None,
+    ):
         self.cfg = cfg
         self.body_names = body_names
         self.keypoint_indices = torch.tensor([body_names.index(n) for n in keypoint_names], dtype=torch.long)
@@ -38,6 +49,10 @@ class SonicStyleReward:
             [i for i, n in enumerate(keypoint_names) if "head" in n.lower() or "wrist" in n.lower() or "hand" in n.lower()],
             dtype=torch.long,
         )
+        self.ankle_joint_indices = torch.tensor(
+            [i for i, n in enumerate(joint_names or []) if "ankle" in n.lower()],
+            dtype=torch.long,
+        )
 
     def __call__(
         self,
@@ -47,7 +62,7 @@ class SonicStyleReward:
         previous_action: torch.Tensor,
         joint_low: torch.Tensor,
         joint_high: torch.Tensor,
-        previous_body_linvel: torch.Tensor | None,
+        previous_joint_vel: torch.Tensor | None,
         dt: float,
         undesired_contact_count: torch.Tensor | None = None,
     ) -> RewardOutput:
@@ -89,12 +104,12 @@ class SonicStyleReward:
             "body_linvel": cfg.body_linvel_weight * exp_reward(linvel_err_sq, cfg.body_linvel_std),
             "body_angvel": cfg.body_angvel_weight * exp_reward(angvel_err_sq, cfg.body_angvel_std),
             "keypoint": cfg.keypoint_weight * exp_reward(key_err_sq, cfg.keypoint_std),
-            "action_rate": cfg.action_rate_weight * (action - previous_action).square().mean(-1),
+            "action_rate": cfg.action_rate_weight * (action - previous_action).square().sum(-1),
         }
 
         lower_violation = (joint_low - obs.joint_pos).clamp_min(0)
         upper_violation = (obs.joint_pos - joint_high).clamp_min(0)
-        terms["joint_limit"] = cfg.joint_limit_weight * (lower_violation + upper_violation).square().sum(-1)
+        terms["joint_limit"] = cfg.joint_limit_weight * (lower_violation + upper_violation).sum(-1)
 
         if undesired_contact_count is None:
             undesired_contact_count = torch.zeros_like(anchor_pos_err_sq)
@@ -107,10 +122,10 @@ class SonicStyleReward:
             shake = torch.zeros_like(anchor_pos_err_sq)
         terms["anti_shake"] = cfg.anti_shake_weight * shake
 
-        if previous_body_linvel is not None and len(self.foot_indices):
-            fidx = kidx[self.foot_indices.to(dev)]
-            feet_acc = (obs.body_linvel[:, fidx] - previous_body_linvel[:, fidx]) / dt
-            feet_acc_term = feet_acc.square().sum(-1).mean(-1)
+        if previous_joint_vel is not None and len(self.ankle_joint_indices):
+            aidx = self.ankle_joint_indices.to(dev)
+            ankle_acc = (obs.joint_vel[:, aidx] - previous_joint_vel[:, aidx]) / dt
+            feet_acc_term = ankle_acc.square().sum(-1)
         else:
             feet_acc_term = torch.zeros_like(anchor_pos_err_sq)
         terms["feet_acc"] = cfg.feet_acc_weight * feet_acc_term

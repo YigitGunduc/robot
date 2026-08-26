@@ -32,15 +32,22 @@ class FrozenSiglip2(nn.Module):
         for p in self.model.parameters():
             p.requires_grad_(False)
         self.device_name = device
+        self._text_cache: dict[str, torch.Tensor] = {}
 
     @torch.inference_mode()
     def encode_text(self, texts: list[str]) -> torch.Tensor:
-        inputs = self.processor(text=texts, padding="max_length", return_tensors="pt")
-        inputs = {k: v.to(self.device_name) for k, v in inputs.items()}
-        if hasattr(self.model, "get_text_features"):
-            return self.model.get_text_features(**inputs)
-        out = self.model.text_model(**inputs)
-        return getattr(out, "pooler_output", out.last_hidden_state.mean(dim=1))
+        missing = list(dict.fromkeys(text for text in texts if text not in self._text_cache))
+        if missing:
+            inputs = self.processor(text=missing, padding="max_length", return_tensors="pt")
+            inputs = {k: v.to(self.device_name) for k, v in inputs.items()}
+            if hasattr(self.model, "get_text_features"):
+                features = self.model.get_text_features(**inputs)
+            else:
+                out = self.model.text_model(**inputs)
+                features = getattr(out, "pooler_output", out.last_hidden_state.mean(dim=1))
+            for text, feature in zip(missing, features, strict=True):
+                self._text_cache[text] = feature.detach()
+        return torch.stack([self._text_cache[text] for text in texts])
 
     @torch.inference_mode()
     def encode_images(self, images: list[Any]) -> torch.Tensor:

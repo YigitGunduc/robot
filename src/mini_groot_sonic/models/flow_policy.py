@@ -31,10 +31,8 @@ class TinyFlowMotionPolicy(nn.Module):
         self.cfg = cfg
         d = cfg.model_dim
         self.action_proj = nn.Linear(cfg.action_dim, d)
-        self.state_norm = nn.LayerNorm(cfg.state_dim)
         self.text_norm = nn.LayerNorm(cfg.text_dim)
         self.vision_norm = nn.LayerNorm(cfg.vision_dim)
-        self.goal_norm = nn.LayerNorm(cfg.goal_dim) if cfg.goal_dim > 0 else None
         self.state_proj = nn.Linear(cfg.state_dim, d)
         self.text_proj = nn.Linear(cfg.text_dim, d)
         self.vision_proj = nn.Linear(cfg.vision_dim, d)
@@ -53,6 +51,33 @@ class TinyFlowMotionPolicy(nn.Module):
         )
         self.transformer = nn.TransformerEncoder(layer, num_layers=cfg.num_layers)
         self.out = nn.Linear(d, cfg.action_dim)
+        self.register_buffer("state_mean", torch.zeros(cfg.state_dim))
+        self.register_buffer("state_std", torch.ones(cfg.state_dim))
+        self.register_buffer("goal_mean", torch.zeros(cfg.goal_dim))
+        self.register_buffer("goal_std", torch.ones(cfg.goal_dim))
+
+    @torch.no_grad()
+    def set_normalization_stats(
+        self,
+        state_mean: torch.Tensor,
+        state_std: torch.Tensor,
+        goal_mean: torch.Tensor,
+        goal_std: torch.Tensor,
+    ) -> None:
+        self.state_mean.copy_(state_mean)
+        self.state_std.copy_(state_std.clamp_min(1e-4))
+        self.goal_mean.copy_(goal_mean)
+        self.goal_std.copy_(goal_std.clamp_min(1e-4))
+
+    def _normalize_goal(self, goal: torch.Tensor) -> torch.Tensor:
+        normalized = (goal - self.goal_mean) / self.goal_std.clamp_min(1e-4)
+        if self.cfg.goal_dim % self.cfg.goal_slot_dim:
+            return normalized
+        raw_slots = goal.reshape(goal.shape[0], -1, self.cfg.goal_slot_dim)
+        slots = normalized.reshape_as(raw_slots)
+        mask = raw_slots[..., -1:]
+        slots = torch.cat([slots[..., :-1] * mask, mask], dim=-1)
+        return slots.flatten(1)
 
     def _context_tokens(
         self,
@@ -61,14 +86,34 @@ class TinyFlowMotionPolicy(nn.Module):
         vision: torch.Tensor | None,
         goal: torch.Tensor | None,
     ) -> list[torch.Tensor]:
+        normalized_state = (state - self.state_mean) / self.state_std.clamp_min(1e-4)
+        state_token = self.state_proj(normalized_state)
+        if self.training and self.cfg.state_dropout_prob > 0:
+            keep = (torch.rand(state.shape[0], 1, device=state.device) >= self.cfg.state_dropout_prob).to(state.dtype)
+            state_token = state_token * keep
+        text_token = self.text_proj(self.text_norm(text))
+        if self.training and self.cfg.condition_dropout_prob > 0:
+            text_keep = (
+                torch.rand(text.shape[0], 1, device=text.device) >= self.cfg.condition_dropout_prob
+            ).to(text.dtype)
+            text_token = text_token * text_keep
         toks = [
-            self.state_proj(self.state_norm(state))[:, None],
-            self.text_proj(self.text_norm(text))[:, None],
+            state_token[:, None],
+            text_token[:, None],
         ]
         if vision is not None:
             toks.append(self.vision_proj(self.vision_norm(vision))[:, None])
-        if self.goal_proj is not None and goal is not None:
-            toks.append(self.goal_proj(self.goal_norm(goal))[:, None])
+        if self.goal_proj is not None:
+            if goal is None:
+                goal = torch.zeros(state.shape[0], self.cfg.goal_dim, device=state.device, dtype=state.dtype)
+            normalized_goal = self._normalize_goal(goal)
+            goal_token = self.goal_proj(normalized_goal)
+            if self.training and self.cfg.condition_dropout_prob > 0:
+                keep = (
+                    torch.rand(goal.shape[0], 1, device=goal.device) >= self.cfg.condition_dropout_prob
+                ).to(goal.dtype)
+                goal_token = goal_token * keep
+            toks.append(goal_token[:, None])
         return toks
 
     def predict_velocity(
@@ -80,7 +125,7 @@ class TinyFlowMotionPolicy(nn.Module):
         vision: torch.Tensor | None = None,
         goal: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        b, h, _ = noisy_actions.shape
+        _, h, _ = noisy_actions.shape
         action = self.action_proj(noisy_actions)
         time = self.time_proj(self.time_embed(t))[:, None, :]
         action = action + time
@@ -102,7 +147,7 @@ class TinyFlowMotionPolicy(nn.Module):
     ) -> FlowLossOutput:
         b = actions.shape[0]
         beta = torch.distributions.Beta(self.cfg.beta_alpha, self.cfg.beta_beta)
-        t = beta.sample((b,)).to(actions.device, actions.dtype)
+        t = (1.0 - beta.sample((b,))).to(actions.device, actions.dtype) * self.cfg.noise_scale
         noise = torch.randn_like(actions)
         tt = t[:, None, None]
         noisy = (1.0 - tt) * noise + tt * actions

@@ -41,3 +41,22 @@ def quat_distance_angle(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
 
 def normalize_quat(q: torch.Tensor) -> torch.Tensor:
     return q / q.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+
+
+def quat_to_matrix(q: torch.Tensor) -> torch.Tensor:
+    """Convert normalized wxyz quaternions to rotation matrices."""
+    w, x, y, z = normalize_quat(q).unbind(-1)
+    return torch.stack(
+        (
+            1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w),
+            2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
+            2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y),
+        ),
+        dim=-1,
+    ).reshape(q.shape[:-1] + (3, 3))
+
+
+def quat_to_rotation_6d(q: torch.Tensor) -> torch.Tensor:
+    """Continuous 6D rotation representation using the first two columns."""
+    matrix = quat_to_matrix(q)
+    return torch.cat([matrix[..., :, 0], matrix[..., :, 1]], dim=-1)

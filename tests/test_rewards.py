@@ -9,7 +9,8 @@ from mini_groot_sonic.training.rewards import SonicStyleReward
 def test_reward_is_high_for_matching_reference():
     body_names = ["pelvis", "head", "left_wrist", "right_wrist", "left_ankle", "right_ankle"]
     keypoints = ["head", "left_wrist", "right_wrist", "left_ankle", "right_ankle"]
-    fn = SonicStyleReward(RewardConfig(), body_names, keypoints)
+    joint_names = [f"joint_{i}" for i in range(27)] + ["left_ankle_joint", "right_ankle_joint"]
+    fn = SonicStyleReward(RewardConfig(), body_names, keypoints, joint_names)
     b, nb = 2, len(body_names)
     q_ident = torch.tensor([1.0, 0, 0, 0]).repeat(b, nb, 1)
     root_q = torch.tensor([1.0, 0, 0, 0]).repeat(b, 1)
@@ -21,6 +22,7 @@ def test_reward_is_high_for_matching_reference():
         body_linvel=torch.zeros(b, nb, 3),
         body_angvel=torch.zeros(b, nb, 3),
         joint_pos=torch.zeros(b, 29),
+        joint_vel=torch.zeros(b, 29),
     )
     ref = {
         "root_pos": obs.root_pos.clone(),
@@ -37,7 +39,7 @@ def test_reward_is_high_for_matching_reference():
         torch.zeros(b, 29),
         torch.full((29,), -3.0),
         torch.full((29,), 3.0),
-        torch.zeros(b, nb, 3),
+        torch.zeros(b, 29),
         0.02,
     )
     assert torch.all(out.total > 5.0)

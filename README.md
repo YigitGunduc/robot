@@ -34,7 +34,10 @@ planner command / text / optional vision / optional sparse 3D goals
 
 The upper model learns **what motion to request**. The body controller learns **how to physically execute it**.
 
-The 29 action outputs preserve the user's existing convention: normalized joint-position offsets around the G1 default pose.
+The 29 outputs are bounded normalized joint-position targets. By default each joint maps
+asymmetrically onto its legal range around the default pose. The simulator either sends
+those targets to MuJoCo position actuators or converts them to clipped PD torques for
+MuJoCo motor actuators.
 
 ---
 
@@ -45,14 +48,14 @@ The released SONIC stack uses multiple motion encoders, FSQ, one shared G1 dynam
 This project keeps the smallest useful subset:
 
 ```text
-future G1 q/qdot (10 reference frames)
+future G1 q/qdot + root trajectory/orientation/height/velocity (10 frames)
         |
         v
 small G1 MLP encoder
         |
         v
 64D FSQ token (32 scalar levels)
-        |-----------------------> kinematic decoder -> reconstruct future q/qdot
+        |-----------------------> kinematic decoder -> reconstruct normalized reference
         |
         + proprio history (10 frames)
         |
@@ -60,7 +63,7 @@ small G1 MLP encoder
 small dynamic decoder
         |
         v
-29 normalized joint-position offsets
+29 bounded joint-position targets
 ```
 
 The body model is trained jointly with PPO and a reconstruction auxiliary loss. That follows the released SONIC training pattern more closely than pretraining a standalone autoencoder first.
@@ -78,7 +81,7 @@ The default reward weights in `RewardConfig` mirror the released SONIC compositi
 - joint limits: `-10.0`
 - undesired contacts: `-0.1`
 - head/wrist anti-shake: `-0.005`
-- foot acceleration: `-2.5e-6`
+- ankle-joint acceleration: `-2.5e-7`
 
 The implementation is deliberately smaller than NVIDIA's released MLP sizes.
 
@@ -114,6 +117,7 @@ Training uses the current GR00T-N1.7 flow convention:
 
 ```text
 z_t = (1 - t) * noise + t * target
+t = (1 - Beta(1.5, 1.0)) * 0.999
 velocity_target = target - noise
 loss = MSE(predicted_velocity, velocity_target)
 ```
@@ -166,6 +170,7 @@ This code expects the official extracted layout:
 bones-seed/
   metadata/
     seed_metadata_v00*.parquet or .csv
+    seed_metadata_*_temporal_labels.jsonl
   g1/
     csv/
       <date>/
@@ -179,7 +184,9 @@ Official BONES G1 CSVs contain:
 - `root_rotateX/Y/Z` in extrinsic XYZ Euler degrees
 - `<joint>_dof` in degrees, matching the G1 joint order
 
-The loader automatically reads the natural-language description fields and tries to detect the metadata motion-ID column.
+The loader automatically reads natural-language descriptions, actor/source metadata,
+and temporal segmentation. Multi-phase motions are emitted as separately captioned
+subclips by default.
 
 BONES-SEED is gated/licensed; this project assumes you already have authorized access and a local copy.
 
@@ -207,6 +214,11 @@ right_ankle_roll_link
 
 If your XML uses different names, change `SimConfig.keypoint_body_names`.
 
+The environment validates actuator semantics before training. `<position>` actuators
+receive position targets directly. `<motor>` actuators receive explicit PD torque with
+gear correction and finite torque clipping. Mixed or ambiguous actuator definitions fail
+fast. Tune `joint_stiffness` and `joint_damping` for the exact MJCF before PPO.
+
 ---
 
 ## 1. Preprocess a small BONES subset
@@ -218,7 +230,8 @@ mgsp-preprocess-bones \
   --bones-root /data/bones-seed \
   --mjcf /path/to/g1_29dof.xml \
   --out data/bones_preprocessed \
-  --limit 256
+  --limit 256 \
+  --seed 0
 ```
 
 This:
@@ -228,10 +241,14 @@ This:
 3. Converts root extrinsic XYZ Euler degrees to quaternions.
 4. Converts joint degrees to radians.
 5. Resamples to 50 Hz.
-6. Computes joint velocities.
+6. Computes joint and root linear/angular velocities with MuJoCo quaternion differentiation.
 7. Runs MuJoCo forward kinematics once on CPU.
 8. Saves body positions, orientations and velocities for reward computation.
-9. Preserves all BONES caption variants in the output file.
+9. Uses BONES temporal descriptions to split multi-phase clips.
+10. Preserves actor/source IDs for leakage-free validation splits.
+
+`--limit` is a seeded sample of BONES rather than the first files in lexical order, so
+small experiments are reproducible without silently biasing the subset toward one capture batch.
 
 The precomputed body tracks are important: the GPU PPO loop should not repeatedly recalculate reference kinematics on the CPU.
 
@@ -244,7 +261,7 @@ mgsp-train-body \
   --motions data/bones_preprocessed \
   --mjcf /path/to/g1_29dof.xml \
   --device cuda:0 \
-  --num-envs 512 \
+  --num-envs 256 \
   --iterations 5000 \
   --max-motions 256 \
   --out runs/body
@@ -257,7 +274,7 @@ The first critical milestone is **not language**. It is:
 The training path is:
 
 ```text
-BONES future q/qdot
+BONES future q/qdot + invariant root motion
        |
        v
 G1 encoder -> FSQ 64D token
@@ -267,7 +284,7 @@ G1 encoder -> FSQ 64D token
 64D token + 10-step proprio history
        |
        v
-body decoder -> 29 normalized joint-position offsets
+body decoder -> 29 bounded joint-position targets
        |
        v
 MJWarp G1 physics
@@ -275,6 +292,14 @@ MJWarp G1 physics
        v
 SONIC-style tracking reward + PPO
 ```
+
+Training enables observation/reference noise, randomized friction, mass, COM, motor
+strength, PD gains and one-step latency, plus occasional root pushes. The critic receives
+clean privileged state. Motion sampling is duration-aware and gradually upweights failed
+motions with a cap.
+
+Training automatically reserves a validation group. Actor IDs are used when present;
+otherwise source-motion IDs are used so temporal segments never cross the split.
 
 The default simulator rate is:
 
@@ -301,7 +326,9 @@ Only build the sharded loader after the controller is behaving correctly.
 
 # 3. Collect synthetic replay data
 
-After body training, replay BONES motions through the learned token controller:
+After body training, replay BONES motions through the learned token controller. Replay
+rows store the pre-action state beside the token generated from that state, preserving
+the causal `state_t -> token_t...` contract:
 
 ```bash
 mgsp-collect-replay \
@@ -345,6 +372,12 @@ mgsp-collect-replay \
 ```
 
 Use this mainly for debugging/data-pipeline validation. The learned controller replay is more valuable because it represents physically realized controller behavior.
+
+Collect a smaller randomized recovery set after nominal replay works:
+
+```bash
+mgsp-collect-replay ... --mode policy --randomized --out replays/recovery
+```
 
 ---
 
@@ -417,6 +450,11 @@ mgsp-train-flow ... --vision
 
 The pretrained SigLIP2 model is frozen. Only the compact robotics flow Transformer trains.
 
+Training creates actor/source-disjoint train/validation partitions, learns per-feature
+state/goal statistics from training data only, caches repeated text embeddings, uses BF16
+autocast on CUDA, and saves `flow_best.pt` by validation loss. Logged validation metrics
+also include sampled-token MSE and temporal token delta.
+
 The replay dataset randomly chooses one BONES caption variant each time, which gives natural language augmentation for free.
 
 ---
@@ -452,7 +490,7 @@ All target poses are converted from simulator world coordinates into the **curre
 Interpretation:
 
 ```text
-mask = 0 -> model decides this body part itself
+mask = 0 -> target pose is zeroed; model decides this body part itself
 mask = 1 -> this pose is an important continuous constraint
 ```
 
@@ -510,7 +548,8 @@ upper replan:           2.5 Hz
 consume before replan: 20 tokens
 ```
 
-That preserves overlap and lets the upper model recondition on the newest robot state.
+The unused tail is blended into the new chunk across the overlap, avoiding a hard token
+and joint-command discontinuity while still reconditioning on the newest robot state.
 
 The generated flow output is projected back to the nearest FSQ grid before the body decoder by default. This is a conservative choice because the small controller is trained on quantized tokens.
 
@@ -543,7 +582,7 @@ The flow model only assumes it receives fixed-size text/image embeddings.
 
 ## SONIC
 
-NVIDIA uses much larger MLPs, multiple encoders (G1, teleop, SMPL, optional SOMA), a privileged critic, adaptive motion sampling, richer domain randomization and multi-GPU Isaac Lab training.
+NVIDIA uses much larger MLPs, multiple encoders (G1, teleop, SMPL, optional SOMA), and multi-GPU Isaac Lab training.
 
 This project starts with:
 
@@ -552,8 +591,9 @@ one G1 encoder
 one FSQ
 one small dynamic decoder
 one small kinematic decoder
-one critic
+one privileged critic
 PPO + reconstruction
+subset-oriented domain randomization and adaptive sampling
 ```
 
 There is a `SparseGoalEncoder` scaffold in `models/sonic_tiny.py`, but it is **not trained by the base body PPO loop yet**. Train the robust G1 token/controller first. Add goal/hybrid token alignment only after held-out tracking works.
@@ -566,8 +606,17 @@ This project uses:
 
 ```text
 frozen SigLIP2
-4-layer 256D Transformer
+3-layer 192D Transformer
 64D x 40 token flow output
+```
+
+With `configs/default.yaml`, the trainable footprint is approximately:
+
+```text
+body actor:   1.27M parameters
+body critic:  0.80M parameters
+flow model:   1.76M parameters
+total:        3.83M parameters (excluding frozen SigLIP2)
 ```
 
 That is intentional.
@@ -581,13 +630,27 @@ Do this before scaling anything:
 ```text
 1. Preprocess 64 locomotion/gesture BONES clips.
 2. Train with 64-128 MJWarp environments.
-3. Verify the exact same controller tracks held-out clips.
+3. Evaluate the controller on actor/source-disjoint held-out clips.
 4. Collect 100 replay episodes.
 5. Train text-only flow model.
 6. Test 20 paraphrased commands.
 ```
 
 Only after those six steps work should you spend GPU budget on thousands of motions or visual data.
+
+Evaluate a body checkpoint explicitly with:
+
+```bash
+mgsp-eval-body \
+  --motions data/bones_validation \
+  --mjcf /path/to/g1_29dof.xml \
+  --body runs/body/body_best.pt
+```
+
+The report includes success rate, root position/orientation error, MPJPE, joint error,
+action rate, undesired contacts, and mean absolute actuator force. Training also logs
+individual reward terms, FSQ occupancy/saturation, policy/value/reconstruction losses,
+KL, and held-out metrics.
 
 ---
 
@@ -606,6 +669,12 @@ They cover:
 - Flow matching forward/backward/sample shapes.
 - BONES CSV parsing/resampling.
 - SONIC-style reward sanity.
+- Root-reference translation/yaw invariance.
+- Bounded PPO action likelihoods.
+- GR00T N1.7 timestep sampling.
+- Replay causality, goal masking and metadata deduplication.
+- Replanning overlap continuity.
+- MuJoCo actuator detection and root-velocity preprocessing when MuJoCo is installed.
 
 The GPU MJWarp integration cannot be validated without an NVIDIA/CUDA machine and a concrete G1 MJCF. Run the first real simulator smoke test on the target GPU before launching PPO.
 
@@ -613,12 +682,14 @@ The GPU MJWarp integration cannot be validated without an NVIDIA/CUDA machine an
 
 # Integration with the existing G1 stack
 
-The new controller intentionally preserves the existing 29 normalized joint-position-offset boundary, so it can live alongside the current locomotion files rather than replacing everything immediately.
+The controller exposes 29 normalized joint-position targets. `MJWarpG1VecEnv` owns the
+single conversion boundary to either position control or PD torque control; deployment
+must reproduce that same target mapping, gains, gear convention and clipping.
 
 Suggested integration boundary:
 
 ```text
-existing environment / actuator semantics
+validated position or PD-torque actuator boundary
              ^
              |
 TinySonicPolicy.decode_token(...)

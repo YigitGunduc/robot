@@ -6,10 +6,13 @@ sonic:
   future_frames: 10
   future_stride: 5
   prop_history: 10
-  action_scale: 0.5
+  encoder_hidden: [256, 256, 128]
+  controller_hidden: [384, 384, 256, 128]
+  recon_hidden: [256, 256, 128]
+  critic_hidden: [384, 256, 128]
 
 ppo:
-  num_envs: 512
+  num_envs: 256
   rollout_steps: 32
   ppo_epochs: 5
   minibatches: 4
@@ -21,16 +24,25 @@ ppo:
   critic_lr: 1.0e-3
   aux_recon_coef: 0.01
   target_kl: 0.01
+  seed: 0
+  checkpoint_interval: 100
+  eval_interval: 100
 
 flow:
   action_dim: 64
   action_horizon: 40
-  model_dim: 256
-  num_layers: 4
-  num_heads: 8
+  state_dim: 68
+  goal_dim: 48
+  model_dim: 192
+  num_layers: 3
+  num_heads: 6
   inference_steps: 4
   beta_alpha: 1.5
   beta_beta: 1.0
+  noise_scale: 0.999
+  state_dropout_prob: 0.2
+  condition_dropout_prob: 0.1
+  seed: 0
 
 sim:
   physics_dt: 0.005
@@ -38,6 +50,11 @@ sim:
   device: cuda:0
   nconmax: 48
   njmax: 288
+  action_scale: null
+  actuator_mode: auto
+  joint_stiffness: 80.0
+  joint_damping: 2.0
+  enable_randomization: false
 
 replay:
   control_hz: 50

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import json
+import random
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 import pandas as pd
 from scipy.spatial.transform import Rotation, Slerp
-
 
 DESCRIPTION_COLUMNS = (
     "content_natural_desc_1",
@@ -81,6 +82,20 @@ class BonesSeedIndex:
             stem = self._normalize_id(v)
             if stem in self.by_stem and stem not in self._row_by_stem:
                 self._row_by_stem[stem] = int(i)
+        self.temporal_labels: dict[str, list[dict]] = {}
+        temporal_candidates = sorted(
+            (self.root / "metadata").glob("seed_metadata_*_temporal_labels.jsonl")
+        )
+        if temporal_candidates:
+            with temporal_candidates[-1].open(encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    item = json.loads(line)
+                    key = self._normalize_id(item.get("filename", ""))
+                    events = item.get("events", [])
+                    if key and isinstance(events, list):
+                        self.temporal_labels[key] = events
 
     @staticmethod
     def _normalize_id(v) -> str:
@@ -105,24 +120,48 @@ class BonesSeedIndex:
             )
         return str(best_col)
 
-    def captions_for(self, stem: str) -> list[str]:
+    def captions_for(self, stem: str, preferred_column: str | None = None) -> list[str]:
         row_idx = self._row_by_stem.get(stem)
         if row_idx is None:
             return [stem.replace("_", " ")]
         row = self.meta.loc[row_idx]
         out = []
-        for col in DESCRIPTION_COLUMNS:
+        columns = list(DESCRIPTION_COLUMNS)
+        if preferred_column in columns:
+            columns.remove(preferred_column)
+            columns.insert(0, preferred_column)
+        for col in columns:
             if col in self.meta.columns and pd.notna(row[col]):
                 text = str(row[col]).strip()
                 if text and text.lower() != "nan" and text not in out:
                     out.append(text)
         return out or [stem.replace("_", " ")]
 
-    def iter_records(self, limit: int | None = None) -> Iterable[tuple[str, Path, list[str]]]:
-        count = 0
-        for p in self.files:
-            yield p.stem, p, self.captions_for(p.stem)
-            count += 1
+    def segments_for(self, stem: str) -> list[dict]:
+        return self.temporal_labels.get(stem, [])
+
+    def metadata_for(self, stem: str) -> dict[str, str]:
+        row_idx = self._row_by_stem.get(stem)
+        if row_idx is None:
+            return {}
+        row = self.meta.loc[row_idx]
+        out = {}
+        for key in ("actor_uid", "take_actor", "content_name", "package", "category"):
+            if key in self.meta.columns and pd.notna(row[key]):
+                out[key] = str(row[key])
+        return out
+
+    def iter_records(
+        self,
+        limit: int | None = None,
+        preferred_column: str | None = None,
+        seed: int | None = None,
+    ) -> Iterable[tuple[str, Path, list[str]]]:
+        files = self.files.copy()
+        if seed is not None:
+            random.Random(seed).shuffle(files)
+        for count, p in enumerate(files, start=1):
+            yield p.stem, p, self.captions_for(p.stem, preferred_column)
             if limit is not None and count >= limit:
                 return
 
@@ -188,7 +227,7 @@ def load_g1_csv(
     if abs(target_fps - source_fps) > 1e-6:
         duration = (len(df) - 1) / source_fps
         old_t = np.arange(len(df), dtype=np.float64) / source_fps
-        new_len = max(2, int(round(duration * target_fps)) + 1)
+        new_len = max(2, round(duration * target_fps) + 1)
         new_t = np.arange(new_len, dtype=np.float64) / target_fps
         new_t[-1] = min(new_t[-1], old_t[-1])
         joint_pos = np.stack([np.interp(new_t, old_t, joint_pos[:, j]) for j in range(joint_pos.shape[1])], axis=-1).astype(np.float32)

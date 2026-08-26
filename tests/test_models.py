@@ -14,7 +14,7 @@ def test_tiny_sonic_shapes():
     policy = TinySonicPolicy(cfg, GoalConfig(hidden=(32,)))
     b = 4
     prop = torch.randn(b, cfg.proprio_dim)
-    ref = torch.randn(b, cfg.future_frames, cfg.dof * 2)
+    ref = torch.randn(b, cfg.future_frames, cfg.reference_frame_dim)
     goals = torch.randn(b, 6, 7)
     masks = torch.zeros(b, 6)
     masks[:, 3] = 1
@@ -50,3 +50,34 @@ def test_flow_loss_and_sample_shapes():
     out.loss.backward()
     sample = model.sample(state, text, vision, goal)
     assert sample.shape == (b, 8, 64)
+
+
+def test_flow_time_distribution_matches_n1d7_noise_biased_schedule():
+    cfg = FlowConfig(
+        action_horizon=2,
+        state_dim=68,
+        text_dim=8,
+        vision_dim=8,
+        goal_dim=0,
+        model_dim=16,
+        num_layers=1,
+        num_heads=2,
+    )
+    model = TinyFlowMotionPolicy(cfg)
+    b = 512
+    out = model.flow_matching_loss(
+        torch.randn(b, 2, 64),
+        torch.randn(b, 68),
+        torch.randn(b, 8),
+    )
+    assert 0.3 < float(out.t.mean()) < 0.5
+
+
+def test_squashed_policy_actions_and_log_prob_are_finite():
+    cfg = SonicTinyConfig(encoder_hidden=(16,), controller_hidden=(16,), recon_hidden=(16,))
+    policy = TinySonicPolicy(cfg)
+    mean = torch.full((32, cfg.dof), 5.0)
+    dist = policy.distribution(mean)
+    action = dist.rsample()
+    assert torch.all(action > -1) and torch.all(action < 1)
+    assert torch.isfinite(dist.log_prob(action)).all()

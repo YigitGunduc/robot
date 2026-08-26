@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -9,6 +8,7 @@ import torch
 
 from mini_groot_sonic.config import ReplayConfig, SimConfig, SonicTinyConfig
 from mini_groot_sonic.data.episode_writer import EpisodeWriter
+from mini_groot_sonic.data.reference import make_reference_features
 from mini_groot_sonic.models.sonic_tiny import TinySonicPolicy
 from mini_groot_sonic.sim.mjwarp_env import MJWarpG1VecEnv
 
@@ -53,18 +53,39 @@ class SingleWorldRGBHook:
         return {"rgb": rgb, "rgb_step": np.asarray(step, dtype=np.int32)}
 
 
-def load_policy_checkpoint(path: str | Path, cfg: SonicTinyConfig, device: str) -> TinySonicPolicy:
-    ckpt = torch.load(path, map_location=device)
+def load_policy_checkpoint(
+    path: str | Path,
+    device: str,
+    cfg: SonicTinyConfig | None = None,
+) -> tuple[TinySonicPolicy, SonicTinyConfig]:
+    ckpt = torch.load(path, map_location=device, weights_only=False)
+    cfg = cfg or SonicTinyConfig(**ckpt.get("sonic_cfg", {}))
     policy = TinySonicPolicy(cfg).to(device)
-    policy.load_state_dict(ckpt["policy"] if "policy" in ckpt else ckpt)
+    policy.load_state_dict(ckpt.get("policy", ckpt))
     policy.eval()
-    return policy
+    return policy, cfg
 
 
-def _future_ref(q: torch.Tensor, qd: torch.Tensor, i: int, cfg: SonicTinyConfig) -> torch.Tensor:
+def _future_ref(
+    q: torch.Tensor,
+    qd: torch.Tensor,
+    root_pos: torch.Tensor,
+    root_quat: torch.Tensor,
+    root_linvel: torch.Tensor,
+    root_angvel: torch.Tensor,
+    i: int,
+    cfg: SonicTinyConfig,
+) -> torch.Tensor:
     ids = torch.arange(cfg.future_frames, device=q.device) * cfg.future_stride + i
     ids = ids.clamp_max(q.shape[0] - 1)
-    return torch.cat([q[ids], qd[ids]], dim=-1)[None]
+    return make_reference_features(
+        q[ids][None],
+        qd[ids][None],
+        root_pos[ids][None],
+        root_quat[ids][None],
+        root_linvel[ids][None],
+        root_angvel[ids][None],
+    )
 
 
 def collect_preprocessed_episode(
@@ -84,12 +105,29 @@ def collect_preprocessed_episode(
     qd = torch.from_numpy(np.asarray(data["joint_vel"], np.float32)).to(device)
     root_pos = torch.from_numpy(np.asarray(data["root_pos"], np.float32)).to(device)
     root_quat = torch.from_numpy(np.asarray(data["root_quat"], np.float32)).to(device)
+    root_linvel = torch.from_numpy(
+        np.asarray(data["root_linvel"] if "root_linvel" in data.files else data["body_linvel"][:, 0], np.float32)
+    ).to(device)
+    root_angvel = torch.from_numpy(
+        np.asarray(data["root_angvel"] if "root_angvel" in data.files else data["body_angvel"][:, 0], np.float32)
+    ).to(device)
     caption = str(data["caption"].item())
     captions = [str(x) for x in data["captions"].tolist()] if "captions" in data.files else [caption]
     motion_id = str(data["motion_id"].item())
+    actor_uid = str(data["actor_uid"].item()) if "actor_uid" in data.files else None
+    source_motion_id = (
+        str(data["source_motion_id"].item()) if "source_motion_id" in data.files else motion_id
+    )
 
     env = MJWarpG1VecEnv(sim_cfg, sonic_cfg, num_envs=1)
-    env.reset(root_pos[:1], root_quat[:1], q[:1], joint_vel=qd[:1])
+    obs = env.reset(
+        root_pos[:1],
+        root_quat[:1],
+        q[:1],
+        root_linvel=root_linvel[:1],
+        root_angvel=root_angvel[:1],
+        joint_vel=qd[:1],
+    )
     if hook is None:
         hook = SingleWorldRGBHook(env, replay_cfg) if replay_cfg.save_rgb else NullReplayHook()
     hook.reset()
@@ -103,12 +141,11 @@ def collect_preprocessed_episode(
     }
     rgb, rgb_steps = [], []
     target_body_names = [sim_cfg.root_body_name, *sim_cfg.keypoint_body_names]
-    root_body_idx = env.body_names.index(sim_cfg.root_body_name) if sim_cfg.root_body_name in env.body_names else 0
     target_body_idx = [env.body_names.index(n) for n in sim_cfg.keypoint_body_names]
 
     max_i = max(1, len(q) - (sonic_cfg.future_frames - 1) * sonic_cfg.future_stride)
     for i in range(max_i):
-        future = _future_ref(q, qd, i, sonic_cfg)
+        future = _future_ref(q, qd, root_pos, root_quat, root_linvel, root_angvel, i, sonic_cfg)
         prop = env.proprio_history()
         with torch.no_grad():
             if policy is not None:
@@ -120,15 +157,17 @@ def collect_preprocessed_episode(
             if mode == "policy":
                 if policy is None:
                     raise ValueError("mode='policy' requires a trained TinySonicPolicy")
-                action = out.action_mean.clamp(-1.0, 1.0)
+                action = torch.tanh(out.action_mean)
             elif mode == "reference_pd":
                 # Bootstrap replay: transform desired q into the project's normalized position-offset action space.
-                action = ((q[i : i + 1] - env._default_joint_pos) / sim_cfg.action_scale).clamp(-1.0, 1.0)
+                action = env.target_to_action(q[i : i + 1])
             else:
                 raise ValueError("mode must be 'policy' or 'reference_pd'")
 
-        obs = env.step(action)
-        # root + head/wrists/ankles as sparse goal slots, all in world SE(3) for storage.
+        # Store the state that produced this token/action. This causal alignment is
+        # required by the flow-policy training target.
+        # Root + head/wrists/ankles are stored in world SE(3); the dataset later
+        # converts a future goal into the current root frame.
         slot_pos = torch.cat([obs.root_pos[:, None], obs.body_pos[:, target_body_idx]], dim=1)
         slot_quat = torch.cat([obs.root_quat[:, None], obs.body_quat[:, target_body_idx]], dim=1)
         goal_slots = torch.cat([slot_pos, slot_quat], dim=-1)
@@ -151,6 +190,7 @@ def collect_preprocessed_episode(
         if "rgb" in extra:
             rgb.append(extra["rgb"])
             rgb_steps.append(int(extra.get("rgb_step", i)))
+        obs = env.step(action)
 
     arrays = {k: np.stack(v).astype(np.float32) for k, v in rows.items()}
     if rgb:
@@ -167,5 +207,7 @@ def collect_preprocessed_episode(
             "control_hz": replay_cfg.control_hz,
             "body_names": env.body_names,
             "goal_slot_names": target_body_names,
+            "actor_uid": actor_uid,
+            "source_motion_id": source_motion_id,
         },
     )

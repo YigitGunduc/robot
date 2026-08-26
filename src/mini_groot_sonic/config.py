@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
+from typing import Any
 
 
 @dataclass
@@ -14,7 +15,6 @@ class SonicTinyConfig:
     future_frames: int = 10
     future_stride: int = 5  # 5 x 20 ms = 100 ms between reference frames at 50 Hz
     prop_history: int = 10
-    action_scale: float = 0.5
     encoder_hidden: Sequence[int] = (512, 512, 256)
     controller_hidden: Sequence[int] = (768, 768, 512, 256)
     recon_hidden: Sequence[int] = (512, 512, 256)
@@ -22,6 +22,10 @@ class SonicTinyConfig:
     init_action_std: float = 0.05
     min_action_std: float = 0.001
     max_action_std: float = 0.5
+    # q, qdot, root-local displacement, relative root rotation (6D), root
+    # height, and root-local linear/angular velocity for each future frame.
+    root_reference_dim: int = 16
+    critic_privileged_dim: int = 68
 
     @property
     def proprio_dim_per_frame(self) -> int:
@@ -34,8 +38,11 @@ class SonicTinyConfig:
 
     @property
     def reference_dim(self) -> int:
-        # G1 encoder input: future q + qdot, matching the released SONIC G1 encoder concept.
-        return self.future_frames * self.dof * 2
+        return self.future_frames * self.reference_frame_dim
+
+    @property
+    def reference_frame_dim(self) -> int:
+        return self.dof * 2 + self.root_reference_dim
 
 
 @dataclass
@@ -62,6 +69,7 @@ class GoalConfig:
 class FlowConfig:
     action_dim: int = 64
     action_horizon: int = 40
+    # q, qdot, projected gravity, root-local linear/angular velocity, root height.
     state_dim: int = 68
     text_dim: int = 768
     vision_dim: int = 768
@@ -73,6 +81,11 @@ class FlowConfig:
     inference_steps: int = 4
     beta_alpha: float = 1.5
     beta_beta: float = 1.0
+    noise_scale: float = 0.999
+    state_dropout_prob: float = 0.2
+    condition_dropout_prob: float = 0.1
+    goal_slot_dim: int = 8
+    seed: int = 0
 
 
 @dataclass
@@ -88,7 +101,7 @@ class RewardConfig:
     joint_limit_weight: float = -10.0
     undesired_contact_weight: float = -0.1
     anti_shake_weight: float = -0.005
-    feet_acc_weight: float = -2.5e-6
+    feet_acc_weight: float = -2.5e-7
 
     anchor_pos_std: float = 0.3
     anchor_ori_std: float = 0.4
@@ -120,6 +133,11 @@ class PPOConfig:
     aux_recon_coef: float = 0.01
     max_grad_norm: float = 0.1
     target_kl: float = 0.01
+    seed: int = 0
+    checkpoint_interval: int = 100
+    eval_interval: int = 100
+    failure_sampling_alpha: float = 0.5
+    failure_sampling_cap: float = 4.0
 
 
 @dataclass
@@ -130,7 +148,31 @@ class SimConfig:
     decimation: int = 4
     nconmax: int = 48
     njmax: int = 288
-    action_scale: float = 0.5
+    # None maps [-1, 1] asymmetrically onto each joint's full legal range.
+    # A scalar preserves the legacy default_pose + scale * action mapping.
+    action_scale: float | None = None
+    actuator_mode: str = "auto"  # auto, position, or pd_torque
+    joint_stiffness: float = 80.0
+    joint_damping: float = 2.0
+    joint_limit_margin: float = 0.02
+    enable_randomization: bool = False
+    reset_joint_noise: float = 0.02
+    reset_velocity_noise: float = 0.05
+    observation_joint_pos_noise: float = 0.01
+    observation_joint_vel_noise: float = 0.1
+    observation_angular_vel_noise: float = 0.02
+    gravity_noise: float = 0.01
+    reference_joint_noise: float = 0.01
+    reference_root_noise: float = 0.01
+    motor_strength_range: tuple[float, float] = (0.9, 1.1)
+    friction_scale_range: tuple[float, float] = (0.8, 1.2)
+    mass_scale_range: tuple[float, float] = (0.9, 1.1)
+    center_of_mass_noise: float = 0.01
+    stiffness_range: tuple[float, float] = (0.9, 1.1)
+    damping_range: tuple[float, float] = (0.9, 1.1)
+    action_delay_probability: float = 0.15
+    push_probability_per_step: float = 0.002
+    push_velocity: float = 0.5
     root_body_name: str = "pelvis"
     keypoint_body_names: Sequence[str] = (
         "head_link",
@@ -138,6 +180,14 @@ class SimConfig:
         "right_wrist_yaw_link",
         "left_ankle_roll_link",
         "right_ankle_roll_link",
+    )
+    allowed_contact_body_names: Sequence[str] = (
+        "left_ankle_roll_link",
+        "right_ankle_roll_link",
+        "left_wrist_yaw_link",
+        "right_wrist_yaw_link",
+        "left_elbow_link",
+        "right_elbow_link",
     )
 
 
@@ -161,3 +211,29 @@ class ProjectConfig:
     ppo: PPOConfig = field(default_factory=PPOConfig)
     sim: SimConfig = field(default_factory=SimConfig)
     replay: ReplayConfig = field(default_factory=ReplayConfig)
+
+
+def load_project_config(path: str | Path) -> ProjectConfig:
+    """Load the small YAML config without introducing a Hydra dependency."""
+    import yaml
+
+    with Path(path).open(encoding="utf-8") as f:
+        raw: dict[str, Any] = yaml.safe_load(f) or {}
+
+    def section(name: str, cls):
+        values = dict(raw.get(name, {}))
+        if cls is SimConfig and "mjcf" in values:
+            values["mjcf"] = Path(values["mjcf"])
+        if cls is ReplayConfig and "output_dir" in values:
+            values["output_dir"] = Path(values["output_dir"])
+        return cls(**values)
+
+    return ProjectConfig(
+        sonic=section("sonic", SonicTinyConfig),
+        goal=section("goal", GoalConfig),
+        flow=section("flow", FlowConfig),
+        reward=section("reward", RewardConfig),
+        ppo=section("ppo", PPOConfig),
+        sim=section("sim", SimConfig),
+        replay=section("replay", ReplayConfig),
+    )

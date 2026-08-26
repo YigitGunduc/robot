@@ -20,6 +20,9 @@ class G1ModelMap:
     ctrl_high: np.ndarray
     joint_low: np.ndarray
     joint_high: np.ndarray
+    actuator_is_position: np.ndarray
+    actuator_is_motor: np.ndarray
+    actuator_gear: np.ndarray
 
     @classmethod
     def from_mjmodel(cls, model, root_body_name: str, body_names: list[str] | tuple[str, ...]):
@@ -35,8 +38,11 @@ class G1ModelMap:
             jid = int(model.actuator_trnid[aid, 0])
             if jid < 0:
                 continue
-            jtype = model.jnt_type[jid]
-            if jtype not in (mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE):
+            jtype = int(model.jnt_type[jid])
+            if jtype not in (
+                int(mujoco.mjtJoint.mjJNT_HINGE),
+                int(mujoco.mjtJoint.mjJNT_SLIDE),
+            ):
                 continue
             name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid)
             joint_names.append(name)
@@ -74,8 +80,15 @@ class G1ModelMap:
         default_joint_pos = np.asarray(model.qpos0[qpos_adr_np], dtype=np.float32)
         joint_range = np.asarray(model.jnt_range[[int(model.actuator_trnid[a, 0]) for a in actuator_ids]], dtype=np.float32)
         ctrlrange = np.asarray(model.actuator_ctrlrange[actuator_ids_np], dtype=np.float32)
-        if not np.all(np.isfinite(ctrlrange)):
-            ctrlrange = np.tile(np.asarray([-np.inf, np.inf], dtype=np.float32), (len(actuator_ids), 1))
+        ctrl_limited = np.asarray(model.actuator_ctrllimited[actuator_ids_np], dtype=bool)
+        ctrlrange[~ctrl_limited] = np.asarray([-np.inf, np.inf], dtype=np.float32)
+        # MuJoCo's position shortcut compiles to an affine bias with
+        # bias_prm[1] == -kp. A motor shortcut has zero affine bias.
+        bias = np.asarray(model.actuator_biasprm[actuator_ids_np], dtype=np.float32)
+        gain = np.asarray(model.actuator_gainprm[actuator_ids_np], dtype=np.float32)
+        actuator_is_position = np.abs(bias[:, 1]) > 1e-8
+        actuator_is_motor = (np.abs(bias).max(axis=1) < 1e-8) & (np.abs(gain[:, 0] - 1.0) < 1e-8)
+        actuator_gear = np.asarray(model.actuator_gear[actuator_ids_np, 0], dtype=np.float32)
 
         return cls(
             joint_names=joint_names,
@@ -91,4 +104,7 @@ class G1ModelMap:
             ctrl_high=ctrlrange[:, 1],
             joint_low=joint_range[:, 0],
             joint_high=joint_range[:, 1],
+            actuator_is_position=actuator_is_position,
+            actuator_is_motor=actuator_is_motor,
+            actuator_gear=actuator_gear,
         )

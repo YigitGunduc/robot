@@ -13,6 +13,7 @@ from mini_groot_sonic.models.sonic_tiny import TinySonicCritic, TinySonicPolicy
 class Rollout:
     prop: torch.Tensor
     ref: torch.Tensor
+    privileged: torch.Tensor
     action: torch.Tensor
     old_logp: torch.Tensor
     value: torch.Tensor
@@ -65,6 +66,7 @@ class PPOAuxTrainer:
         flat = lambda x: x.reshape(total, *x.shape[2:])
         prop = flat(roll.prop)
         ref = flat(roll.ref)
+        privileged = flat(roll.privileged)
         action = flat(roll.action)
         old_logp = flat(roll.old_logp)
         old_value = flat(roll.value)
@@ -72,7 +74,11 @@ class PPOAuxTrainer:
         ret = flat(roll.ret)
 
         batch_size = max(1, total // self.cfg.minibatches)
-        stats = {"policy": 0.0, "value": 0.0, "entropy": 0.0, "recon": 0.0, "kl": 0.0, "updates": 0}
+        stats = {
+            name: torch.zeros((), device=prop.device)
+            for name in ("policy", "value", "entropy", "recon", "kl")
+        }
+        updates = 0
         stop = False
         for _ in range(self.cfg.ppo_epochs):
             if stop:
@@ -83,20 +89,20 @@ class PPOAuxTrainer:
                 out = self.policy(prop[ix], ref[ix])
                 dist = self.policy.distribution(out.action_mean)
                 logp = dist.log_prob(action[ix]).sum(-1)
-                entropy = dist.entropy().sum(-1).mean()
+                entropy = -dist.log_prob(dist.rsample()).sum(-1).mean()
                 ratio = (logp - old_logp[ix]).exp()
                 pg1 = ratio * adv[ix]
                 pg2 = ratio.clamp(1.0 - self.cfg.clip, 1.0 + self.cfg.clip) * adv[ix]
                 policy_loss = -torch.minimum(pg1, pg2).mean()
 
-                value = self.critic(prop[ix], ref[ix])
+                value = self.critic(prop[ix], ref[ix], privileged[ix])
                 # Light PPO-style value clipping.
                 value_clipped = old_value[ix] + (value - old_value[ix]).clamp(-self.cfg.clip, self.cfg.clip)
                 v1 = (value - ret[ix]).square()
                 v2 = (value_clipped - ret[ix]).square()
                 value_loss = 0.5 * torch.maximum(v1, v2).mean()
 
-                recon_target = ref[ix].flatten(1)
+                recon_target = self.policy.normalize_reference(ref[ix])
                 recon_loss = torch.nn.functional.mse_loss(out.reconstruction, recon_target)
                 loss = (
                     policy_loss
@@ -112,15 +118,15 @@ class PPOAuxTrainer:
 
                 with torch.no_grad():
                     approx_kl = ((ratio - 1.0) - (logp - old_logp[ix])).mean().abs()
-                stats["policy"] += float(policy_loss.detach())
-                stats["value"] += float(value_loss.detach())
-                stats["entropy"] += float(entropy.detach())
-                stats["recon"] += float(recon_loss.detach())
-                stats["kl"] += float(approx_kl.detach())
-                stats["updates"] += 1
+                stats["policy"] += policy_loss.detach()
+                stats["value"] += value_loss.detach()
+                stats["entropy"] += entropy.detach()
+                stats["recon"] += recon_loss.detach()
+                stats["kl"] += approx_kl.detach()
+                updates += 1
                 if approx_kl > 1.5 * self.cfg.target_kl:
                     stop = True
                     break
 
-        u = max(stats.pop("updates"), 1)
-        return {k: v / u for k, v in stats.items()}
+        updates = max(updates, 1)
+        return {key: float(value / updates) for key, value in stats.items()}
