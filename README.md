@@ -136,6 +136,11 @@ References:
 
 Python 3.11 or 3.12 is recommended on the actual GPU machine.
 
+For Google Colab with BONES on Drive, use
+[`notebooks/mini_groot_sonic_colab.ipynb`](notebooks/mini_groot_sonic_colab.ipynb).
+It selectively extracts a small stand/walk/run curriculum, caches derived data and
+checkpoints on Drive, and runs a target-GPU MJWarp smoke test before PPO.
+
 ```bash
 cd mini_groot_sonic
 python -m venv .venv
@@ -231,7 +236,9 @@ mgsp-preprocess-bones \
   --mjcf /path/to/g1_29dof.xml \
   --out data/bones_preprocessed \
   --limit 256 \
-  --seed 0
+  --seed 0 \
+  --include-keywords "stand,idle,walk,run,jog,turn" \
+  --exclude-keywords "jump,flip,cartwheel,crawl,stairs,climb"
 ```
 
 This:
@@ -249,6 +256,8 @@ This:
 
 `--limit` is a seeded sample of BONES rather than the first files in lexical order, so
 small experiments are reproducible without silently biasing the subset toward one capture batch.
+Keyword filters search all available captions plus actor/source/category metadata and are
+applied before the limit, which makes small motion curricula straightforward.
 
 The precomputed body tracks are important: the GPU PPO loop should not repeatedly recalculate reference kinematics on the CPU.
 
@@ -651,6 +660,19 @@ The report includes success rate, root position/orientation error, MPJPE, joint 
 action rate, undesired contacts, and mean absolute actuator force. Training also logs
 individual reward terms, FSQ occupancy/saturation, policy/value/reconstruction losses,
 KL, and held-out metrics.
+
+Render a held-out rollout beside its BONES reference for visual inspection:
+
+```bash
+mgsp-render-body \
+  --motions data/bones_validation \
+  --mjcf /path/to/g1_29dof.xml \
+  --body runs/body/body_best.pt \
+  --out held_out_policy_vs_reference.mp4
+```
+
+The renderer overlays the caption plus root, MPJPE and joint errors and writes a matching
+`*.metrics.json` sidecar. The Colab notebook exports three such videos to Drive by default.
 
 ---
 

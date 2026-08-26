@@ -60,6 +60,7 @@ def train_body_controller(
     *,
     validation_paths: list[str | Path] | None = None,
     resume_from: str | Path | None = None,
+    reset_best_on_resume: bool = False,
 ) -> TinySonicPolicy:
     seed_everything(ppo_cfg.seed)
     device = torch.device(sim_cfg.device)
@@ -70,9 +71,6 @@ def train_body_controller(
 
     policy = TinySonicPolicy(sonic_cfg).to(device)
     critic = TinySonicCritic(sonic_cfg).to(device)
-    reference_mean, reference_std = bank.reference_stats()
-    policy.set_reference_stats(reference_mean, reference_std)
-    critic.set_reference_stats(reference_mean, reference_std)
     trainer = PPOAuxTrainer(policy, critic, sonic_cfg, ppo_cfg)
     reward_fn = SonicStyleReward(
         reward_cfg,
@@ -90,8 +88,15 @@ def train_body_controller(
         if "optimizer" in checkpoint:
             trainer.optim.load_state_dict(checkpoint["optimizer"])
         start_iteration = int(checkpoint.get("iteration", -1)) + 1
-        best_success = float(checkpoint.get("best_success", best_success))
+        if not reset_best_on_resume:
+            best_success = float(checkpoint.get("best_success", best_success))
         restore_rng_state(checkpoint.get("rng_state"))
+
+    # Refresh normalization after loading so a curriculum stage can expand or
+    # change the motion distribution without retaining stale reference stats.
+    reference_mean, reference_std = bank.reference_stats()
+    policy.set_reference_stats(reference_mean, reference_std)
+    critic.set_reference_stats(reference_mean, reference_std)
 
     state = BodyTrainState(
         motion_ids=torch.zeros(ppo_cfg.num_envs, dtype=torch.long, device=device),

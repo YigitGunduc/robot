@@ -21,6 +21,11 @@ def main() -> None:
     ap.add_argument("--max-motions", type=int, default=256)
     ap.add_argument("--validation-fraction", type=float, default=0.1)
     ap.add_argument("--resume", default=None)
+    ap.add_argument(
+        "--reset-best",
+        action="store_true",
+        help="Reset best-checkpoint comparison when resuming onto a new curriculum dataset",
+    )
     ap.add_argument("--no-randomization", action="store_true")
     args = ap.parse_args()
 
@@ -54,6 +59,7 @@ def main() -> None:
         args.out,
         validation_paths=validation,
         resume_from=args.resume,
+        reset_best_on_resume=args.reset_best,
     )
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import random
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -106,13 +106,24 @@ class BonesSeedIndex:
         stems = set(self.by_stem.keys())
         best_col = None
         best_score = -1
-        for col in self.meta.columns:
-            if self.meta[col].dtype.kind not in "OUS":
-                continue
-            sample = self.meta[col].dropna().astype(str).head(5000)
-            score = sum(Path(x).stem in stems for x in sample)
+        string_columns = [
+            col for col in self.meta.columns if self.meta[col].dtype.kind in "OUS"
+        ]
+        string_columns.sort(
+            key=lambda col: not any(
+                token in str(col).lower() for token in ("filename", "file_name", "motion", "path")
+            )
+        )
+        for col in string_columns:
+            # A Colab curriculum may extract only a few randomly selected CSVs
+            # whose metadata rows are far beyond the first few thousand.
+            values = self.meta[col].dropna().astype(str)
+            column_stems = {Path(x).stem for x in values}
+            score = len(stems & column_stems)
             if score > best_score:
                 best_score, best_col = score, col
+            if score == len(stems):
+                break
         if best_col is None or best_score <= 0:
             raise RuntimeError(
                 "Could not auto-detect BONES motion identifier column. "
@@ -156,12 +167,25 @@ class BonesSeedIndex:
         limit: int | None = None,
         preferred_column: str | None = None,
         seed: int | None = None,
+        include_keywords: Sequence[str] = (),
+        exclude_keywords: Sequence[str] = (),
     ) -> Iterable[tuple[str, Path, list[str]]]:
         files = self.files.copy()
         if seed is not None:
             random.Random(seed).shuffle(files)
-        for count, p in enumerate(files, start=1):
-            yield p.stem, p, self.captions_for(p.stem, preferred_column)
+        include = tuple(term.strip().lower() for term in include_keywords if term.strip())
+        exclude = tuple(term.strip().lower() for term in exclude_keywords if term.strip())
+        count = 0
+        for p in files:
+            captions = self.captions_for(p.stem, preferred_column)
+            metadata = self.metadata_for(p.stem)
+            searchable = " ".join([p.stem, *captions, *metadata.values()]).lower()
+            if include and not any(term in searchable for term in include):
+                continue
+            if exclude and any(term in searchable for term in exclude):
+                continue
+            yield p.stem, p, captions
+            count += 1
             if limit is not None and count >= limit:
                 return
 

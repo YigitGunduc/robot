@@ -22,6 +22,16 @@ def main() -> None:
     ap.add_argument("--source-fps", type=float, default=120.0)
     ap.add_argument("--target-fps", type=float, default=50.0)
     ap.add_argument("--caption-field", default="content_short_description")
+    ap.add_argument(
+        "--include-keywords",
+        default="",
+        help="Comma-separated caption/metadata terms; keep records matching at least one",
+    )
+    ap.add_argument(
+        "--exclude-keywords",
+        default="",
+        help="Comma-separated caption/metadata terms to reject",
+    )
     ap.add_argument("--no-temporal-segments", action="store_true")
     ap.add_argument(
         "--min-clip-seconds",
@@ -30,6 +40,8 @@ def main() -> None:
         help="Discard temporal segments too short for the default future-reference window",
     )
     args = ap.parse_args()
+    include_keywords = [term for term in args.include_keywords.split(",") if term.strip()]
+    exclude_keywords = [term for term in args.exclude_keywords.split(",") if term.strip()]
 
     try:
         import mujoco
@@ -57,7 +69,13 @@ def main() -> None:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     for n, (stem, path, captions) in enumerate(
-        index.iter_records(args.limit, args.caption_field, args.seed),
+        index.iter_records(
+            args.limit,
+            args.caption_field,
+            args.seed,
+            include_keywords,
+            exclude_keywords,
+        ),
         start=1,
     ):
         caption = captions[0]
@@ -75,6 +93,9 @@ def main() -> None:
             description = str(event.get("description", "")).strip()
             if end - start < minimum_frames or not description:
                 continue
+            description_lower = description.lower()
+            if any(term.strip().lower() in description_lower for term in exclude_keywords):
+                continue
             clip_specs.append(
                 (
                     BonesClip(
@@ -89,6 +110,9 @@ def main() -> None:
                     [description],
                 )
             )
+        if not clip_specs and segments and exclude_keywords:
+            print(f"[{n}] skipped {stem}: no safe temporal segments remained")
+            continue
         if not clip_specs:
             clip_specs = [(clip, captions)]
 
