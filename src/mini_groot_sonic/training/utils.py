@@ -34,9 +34,13 @@ def restore_rng_state(state: dict | None) -> None:
         return
     random.setstate(state["python"])
     np.random.set_state(state["numpy"])
-    torch.set_rng_state(state["torch"])
+    # Checkpoints may be loaded with map_location="cuda", which also moves the
+    # CPU generator state tensor to CUDA. PyTorch's CPU generator only accepts a
+    # CPU ByteTensor, and CUDA generator states are likewise safest to restore
+    # from their serialized CPU representation.
+    torch.set_rng_state(state["torch"].cpu())
     if torch.cuda.is_available() and "cuda" in state:
-        torch.cuda.set_rng_state_all(state["cuda"])
+        torch.cuda.set_rng_state_all([generator_state.cpu() for generator_state in state["cuda"]])
 
 
 def save_config_snapshot(path: str | Path, **configs) -> None:
