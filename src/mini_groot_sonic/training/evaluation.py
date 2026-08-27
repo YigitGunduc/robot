@@ -30,7 +30,11 @@ def evaluate_body_controller(
     selected = list(paths[:max_motions])
     if not selected:
         return {}
-    eval_sim = replace(sim_cfg, enable_randomization=False)
+    eval_sim = replace(
+        sim_cfg,
+        enable_randomization=False,
+        enable_observation_noise=False,
+    )
     bank = MotionBank(selected, sonic_cfg, eval_sim.device)
     env = MJWarpG1VecEnv(eval_sim, sonic_cfg, len(selected))
     reward_cfg = reward_cfg or RewardConfig()
@@ -81,8 +85,8 @@ def evaluate_body_controller(
         future_ids = torch.minimum(frame_ids, max_start)
         future = bank.future_reference(motion_ids, future_ids, obs.root_quat)
         out = policy(env.proprio_history(), future)
-        action = torch.tanh(out.action_mean)
-        action = torch.where(active[:, None], action, torch.zeros_like(action))
+        action = torch.where(active[:, None], out.action_mean, torch.zeros_like(out.action_mean))
+        action = action.clamp(-env.action_clip_value, env.action_clip_value)
         obs = env.step(action)
         frame_ids = frame_ids + active.long()
         safe_frame = torch.minimum(frame_ids, bank.lengths[motion_ids] - 1)

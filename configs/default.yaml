@@ -13,20 +13,20 @@ sonic:
 
 ppo:
   num_envs: 256
-  rollout_steps: 32
+  rollout_steps: 24
   ppo_epochs: 5
   minibatches: 4
   gamma: 0.99
   gae_lambda: 0.95
   clip: 0.2
-  entropy_coef: 0.013
+  entropy_coef: 0.01
   actor_lr: 2.0e-5
   actor_lr_min: 1.0e-5
   actor_lr_max: 2.0e-4
   kl_adaptation_factor: 1.5
   critic_lr: 1.0e-3
   aux_recon_coef: 0.01
-  max_grad_norm: 1.0
+  max_grad_norm: 0.1
   target_kl: 0.01
   seed: 0
   checkpoint_interval: 100
@@ -60,6 +60,7 @@ sim:
   nconmax: 48
   njmax: 288
   action_scale: null
+  action_clip_value: 20.0
   sonic_g1_control: true
   actuator_mode: auto
   joint_stiffness: 80.0
@@ -67,6 +68,13 @@ sim:
   soft_joint_limit_factor: 0.9
   undesired_contact_penetration: 1.0e-4
   enable_randomization: false
+  enable_observation_noise: true
+  observation_joint_pos_noise: 0.01
+  observation_joint_vel_noise: 0.5
+  observation_angular_vel_noise: 0.2
+  gravity_noise: 0.05
+  reference_joint_noise: 0.0
+  reference_root_noise: 0.05
 
 replay:
   control_hz: 50

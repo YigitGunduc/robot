@@ -4,9 +4,10 @@ from dataclasses import dataclass
 
 import torch
 from torch import nn
-from torch.distributions import Normal, TanhTransform, TransformedDistribution
+from torch.distributions import Normal
 
 from mini_groot_sonic.config import GoalConfig, SonicTinyConfig
+from mini_groot_sonic.data.reference import flatten_reference_features
 from mini_groot_sonic.models.common import mlp
 from mini_groot_sonic.models.fsq import FiniteScalarQuantizer
 
@@ -68,7 +69,7 @@ class TinySonicPolicy(nn.Module):
 
     def encode_reference(self, future_reference: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # [B, F, reference_frame_dim] or [B, reference_dim]
-        x = future_reference.flatten(1)
+        x = flatten_reference_features(future_reference, self.cfg.dof)
         x = (x - self.reference_mean) / self.reference_std.clamp_min(1e-4)
         latent = self.reference_encoder(x)
         token, indices = self.quantizer(latent)
@@ -91,7 +92,7 @@ class TinySonicPolicy(nn.Module):
         self.reference_std.copy_(std.clamp_min(1e-4))
 
     def normalize_reference(self, future_reference: torch.Tensor) -> torch.Tensor:
-        flat = future_reference.flatten(1)
+        flat = flatten_reference_features(future_reference, self.cfg.dof)
         return (flat - self.reference_mean) / self.reference_std.clamp_min(1e-4)
 
     def forward(
@@ -112,9 +113,9 @@ class TinySonicPolicy(nn.Module):
         reconstruction = self.reconstruct_token(token)
         return SonicOutput(action_mean, token, indices, reconstruction)
 
-    def distribution(self, action_mean: torch.Tensor) -> TransformedDistribution:
+    def distribution(self, action_mean: torch.Tensor) -> Normal:
         std = self.log_std.exp().clamp(self.cfg.min_action_std, self.cfg.max_action_std)
-        return TransformedDistribution(Normal(action_mean, std), [TanhTransform(cache_size=1)])
+        return Normal(action_mean, std)
 
     @torch.no_grad()
     def act_deterministic(
@@ -124,9 +125,7 @@ class TinySonicPolicy(nn.Module):
         goal_targets: torch.Tensor | None = None,
         goal_masks: torch.Tensor | None = None,
     ) -> SonicOutput:
-        out = self(proprio_history, future_reference, goal_targets, goal_masks)
-        out.action_mean = torch.tanh(out.action_mean)
-        return out
+        return self(proprio_history, future_reference, goal_targets, goal_masks)
 
 
 class TinySonicCritic(nn.Module):
@@ -153,5 +152,8 @@ class TinySonicCritic(nn.Module):
         future_reference: torch.Tensor,
         privileged: torch.Tensor,
     ) -> torch.Tensor:
-        reference = (future_reference.flatten(1) - self.reference_mean) / self.reference_std
+        reference = (
+            flatten_reference_features(future_reference, self.cfg.dof)
+            - self.reference_mean
+        ) / self.reference_std
         return self.net(torch.cat([proprio_history, reference, privileged], dim=-1)).squeeze(-1)

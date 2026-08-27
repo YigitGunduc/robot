@@ -17,7 +17,7 @@ def main() -> None:
     ap.add_argument("--out", default="runs/body")
     ap.add_argument("--device", default=None)
     ap.add_argument("--num-envs", type=int, default=None)
-    ap.add_argument("--iterations", type=int, default=5000)
+    ap.add_argument("--iterations", type=int, default=100_000)
     ap.add_argument("--max-motions", type=int, default=256)
     ap.add_argument("--validation-fraction", type=float, default=0.1)
     ap.add_argument("--resume", default=None)
@@ -26,7 +26,14 @@ def main() -> None:
         action="store_true",
         help="Reset best-checkpoint comparison when resuming onto a new curriculum dataset",
     )
-    ap.add_argument("--no-randomization", action="store_true")
+    randomization = ap.add_mutually_exclusive_group()
+    randomization.add_argument(
+        "--randomization", dest="randomization", action="store_true"
+    )
+    randomization.add_argument(
+        "--no-randomization", dest="randomization", action="store_false"
+    )
+    ap.set_defaults(randomization=None)
     args = ap.parse_args()
 
     cfg = load_project_config(args.config)
@@ -38,7 +45,8 @@ def main() -> None:
         cfg.sim.device = args.device
     if args.num_envs is not None:
         cfg.ppo.num_envs = args.num_envs
-    cfg.sim.enable_randomization = not args.no_randomization
+    if args.randomization is not None:
+        cfg.sim.enable_randomization = args.randomization
     paths = sorted(Path(args.motions).glob("*.npz"))
     random.Random(cfg.ppo.seed).shuffle(paths)
     paths = paths[: args.max_motions]

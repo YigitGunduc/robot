@@ -4,16 +4,43 @@ from pathlib import Path
 
 import torch
 
-from mini_groot_sonic.checkpoint import require_current_body_control_stack
-from mini_groot_sonic.config import FlowConfig, SonicTinyConfig
+from mini_groot_sonic.checkpoint import (
+    BODY_CONTROL_STACK_VERSION,
+    body_policy_fingerprint,
+    require_current_body_control_stack,
+)
+from mini_groot_sonic.config import FlowConfig, SimConfig, SonicTinyConfig
 from mini_groot_sonic.models.flow_policy import TinyFlowMotionPolicy
 from mini_groot_sonic.models.frozen_backbones import FrozenSiglip2
 from mini_groot_sonic.models.sonic_tiny import TinySonicPolicy
 from mini_groot_sonic.sim.math_utils import quat_rotate_inverse
 
 
-def load_flow_checkpoint(path: str | Path, device: str) -> tuple[TinyFlowMotionPolicy, FlowConfig]:
+def load_flow_checkpoint(
+    path: str | Path,
+    device: str,
+    *,
+    expected_body_fingerprint: str | None = None,
+) -> tuple[TinyFlowMotionPolicy, FlowConfig]:
     ckpt = torch.load(path, map_location=device, weights_only=False)
+    version = int(ckpt.get("body_control_stack_version", 0))
+    if version != BODY_CONTROL_STACK_VERSION:
+        raise RuntimeError(
+            f"Flow checkpoint targets body control stack v{version}, but runtime requires "
+            f"v{BODY_CONTROL_STACK_VERSION}. Recollect replay with the current body "
+            "checkpoint and retrain the flow model."
+        )
+    body_fingerprint = ckpt.get("body_policy_fingerprint")
+    if not isinstance(body_fingerprint, str):
+        raise TypeError("Flow checkpoint is missing its body-policy fingerprint")
+    if (
+        expected_body_fingerprint is not None
+        and body_fingerprint != expected_body_fingerprint
+    ):
+        raise RuntimeError(
+            "Flow checkpoint was trained against a different body policy/codebook. "
+            "Use the exact body checkpoint that produced its replay data."
+        )
     cfg = FlowConfig(**ckpt["flow_cfg"])
     model = TinyFlowMotionPolicy(cfg).to(device)
     model.load_state_dict(ckpt["model"])
@@ -24,14 +51,24 @@ def load_flow_checkpoint(path: str | Path, device: str) -> tuple[TinyFlowMotionP
 def load_body_checkpoint(
     path: str | Path,
     device: str,
-) -> tuple[TinySonicPolicy, SonicTinyConfig]:
+) -> tuple[TinySonicPolicy, SonicTinyConfig, SimConfig]:
     ckpt = torch.load(path, map_location=device, weights_only=False)
     require_current_body_control_stack(ckpt)
     cfg = SonicTinyConfig(**ckpt.get("sonic_cfg", {}))
     model = TinySonicPolicy(cfg).to(device)
     model.load_state_dict(ckpt.get("policy", ckpt))
     model.eval()
-    return model, cfg
+    fingerprint = body_policy_fingerprint(model.state_dict())
+    if ckpt.get("body_policy_fingerprint") != fingerprint:
+        raise RuntimeError("Body checkpoint policy fingerprint is missing or corrupt")
+    model.checkpoint_fingerprint = fingerprint
+    raw_sim_cfg = ckpt.get("sim_cfg")
+    if not isinstance(raw_sim_cfg, dict):
+        raise TypeError("Current body checkpoint is missing its simulator configuration")
+    sim_cfg = SimConfig(**raw_sim_cfg)
+    sim_cfg.mjcf = Path(sim_cfg.mjcf)
+    sim_cfg.device = device
+    return model, cfg, sim_cfg
 
 
 class RecedingHorizonTokenController:
@@ -117,4 +154,4 @@ class RecedingHorizonTokenController:
             self.replan(command, obs, goal, vision)
         token = self._tokens[:, self._cursor]
         self._cursor += 1
-        return torch.tanh(self.body.decode_token(proprio_history, token)), token
+        return self.body.decode_token(proprio_history, token), token

@@ -9,6 +9,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from mini_groot_sonic.checkpoint import BODY_CONTROL_STACK_VERSION
+
 
 class ReplayWindowDataset(Dataset):
     """Samples GR00T-style future token chunks from collected replay episodes."""
@@ -28,6 +30,19 @@ class ReplayWindowDataset(Dataset):
         self.goal_probs = goal_probabilities
         with (self.root / "episodes.jsonl").open(encoding="utf-8") as f:
             rows = [json.loads(line) for line in f if line.strip()]
+        versions = {int(row.get("body_control_stack_version", 0)) for row in rows}
+        if versions != {BODY_CONTROL_STACK_VERSION}:
+            raise RuntimeError(
+                f"Replay data targets body control stack versions {sorted(versions)}, "
+                f"but v{BODY_CONTROL_STACK_VERSION} is required. Recollect replay data."
+            )
+        body_fingerprints = {row.get("body_policy_fingerprint") for row in rows}
+        if len(body_fingerprints) != 1 or None in body_fingerprints:
+            raise RuntimeError(
+                "Replay data must come from one exact trained body checkpoint; "
+                "reference-PD or mixed-policy replay cannot train the flow model."
+            )
+        self.body_policy_fingerprint = str(next(iter(body_fingerprints)))
         if split not in {"all", "train", "val"}:
             raise ValueError("split must be 'all', 'train', or 'val'")
         if split == "all" or len(rows) < 2:

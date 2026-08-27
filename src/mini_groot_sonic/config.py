@@ -29,7 +29,8 @@ class SonicTinyConfig:
 
     @property
     def proprio_dim_per_frame(self) -> int:
-        # q, qdot, base angular velocity, projected gravity, previous action
+        # projected gravity, base angular velocity, q relative to default, qdot,
+        # previous action -- the released SONIC local_dir_hist ordering.
         return self.dof + self.dof + 3 + 3 + self.dof
 
     @property
@@ -101,7 +102,7 @@ class RewardConfig:
     joint_limit_weight: float = -10.0
     undesired_contact_weight: float = -0.1
     anti_shake_weight: float = -0.005
-    feet_acc_weight: float = -2.5e-7
+    feet_acc_weight: float = -2.5e-6
 
     anchor_pos_std: float = 0.3
     anchor_ori_std: float = 0.4
@@ -128,7 +129,7 @@ class PPOConfig:
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip: float = 0.2
-    entropy_coef: float = 0.013
+    entropy_coef: float = 0.01
     value_coef: float = 1.0
     actor_lr: float = 2e-5
     actor_lr_min: float = 1e-5
@@ -136,7 +137,7 @@ class PPOConfig:
     kl_adaptation_factor: float = 1.5
     critic_lr: float = 1e-3
     aux_recon_coef: float = 0.01
-    max_grad_norm: float = 1.0
+    max_grad_norm: float = 0.1
     target_kl: float = 0.01
     seed: int = 0
     checkpoint_interval: int = 100
@@ -159,6 +160,9 @@ class SimConfig:
     # With sonic_g1_control enabled, None selects SONIC's calibrated per-joint
     # residual scales. Otherwise None retains the legacy full-joint-range mapping.
     action_scale: float | None = None
+    # Released SONIC keeps Gaussian actions unbounded at the policy and clips
+    # only at the environment boundary.
+    action_clip_value: float = 20.0
     sonic_g1_control: bool = True
     actuator_mode: str = "auto"  # auto, position, or pd_torque
     joint_stiffness: float = 80.0
@@ -167,14 +171,15 @@ class SimConfig:
     soft_joint_limit_factor: float = 0.9
     undesired_contact_penetration: float = 1e-4
     enable_randomization: bool = False
+    enable_observation_noise: bool = True
     reset_joint_noise: float = 0.02
     reset_velocity_noise: float = 0.05
     observation_joint_pos_noise: float = 0.01
-    observation_joint_vel_noise: float = 0.1
-    observation_angular_vel_noise: float = 0.02
-    gravity_noise: float = 0.01
-    reference_joint_noise: float = 0.01
-    reference_root_noise: float = 0.01
+    observation_joint_vel_noise: float = 0.5
+    observation_angular_vel_noise: float = 0.2
+    gravity_noise: float = 0.05
+    reference_joint_noise: float = 0.0
+    reference_root_noise: float = 0.05
     motor_strength_range: tuple[float, float] = (0.9, 1.1)
     friction_scale_range: tuple[float, float] = (0.8, 1.2)
     mass_scale_range: tuple[float, float] = (0.9, 1.1)
@@ -186,7 +191,7 @@ class SimConfig:
     push_velocity: float = 0.5
     root_body_name: str = "pelvis"
     keypoint_body_names: Sequence[str] = (
-        "head_link",
+        "torso_link",
         "left_wrist_yaw_link",
         "right_wrist_yaw_link",
         "left_ankle_roll_link",

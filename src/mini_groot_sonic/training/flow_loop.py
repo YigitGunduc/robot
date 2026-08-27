@@ -6,6 +6,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
+from mini_groot_sonic.checkpoint import BODY_CONTROL_STACK_VERSION
 from mini_groot_sonic.config import FlowConfig
 from mini_groot_sonic.data.replay_dataset import ReplayWindowDataset
 from mini_groot_sonic.models.flow_policy import TinyFlowMotionPolicy
@@ -62,6 +63,8 @@ def train_flow_policy(
         validation_fraction=validation_fraction,
         samples_per_episode=4,
     )
+    if ds.body_policy_fingerprint != val_ds.body_policy_fingerprint:
+        raise RuntimeError("Training and validation replay target different body policies")
     loader_kwargs = {
         "batch_size": batch_size,
         "num_workers": num_workers,
@@ -97,6 +100,16 @@ def train_flow_policy(
     best_val = float("inf")
     if resume_from is not None:
         ckpt = torch.load(resume_from, map_location=device_t, weights_only=False)
+        version = int(ckpt.get("body_control_stack_version", 0))
+        if version != BODY_CONTROL_STACK_VERSION:
+            raise RuntimeError(
+                f"Cannot resume flow checkpoint for body stack v{version}; "
+                f"retrain it against v{BODY_CONTROL_STACK_VERSION} replay data"
+            )
+        if ckpt.get("body_policy_fingerprint") != ds.body_policy_fingerprint:
+            raise RuntimeError(
+                "Cannot resume flow training with replay from a different body policy"
+            )
         model.load_state_dict(ckpt["model"])
         if "optimizer" in ckpt:
             optim.load_state_dict(ckpt["optimizer"])
@@ -178,6 +191,8 @@ def train_flow_policy(
                 "sampled_token_mse": sampled_token_mse,
                 "sampled_token_delta": sampled_token_delta,
             },
+            "body_control_stack_version": BODY_CONTROL_STACK_VERSION,
+            "body_policy_fingerprint": ds.body_policy_fingerprint,
         }
         torch.save(checkpoint, output_dir / f"flow_{epoch:04d}.pt")
         if val_mean <= best_val:

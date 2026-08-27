@@ -20,16 +20,18 @@ def main() -> None:
     args = ap.parse_args()
 
     cfg = load_project_config(args.config)
-    cfg.sim.mjcf = Path(args.mjcf)
-    cfg.sim.device = args.device or cfg.sim.device
-    cfg.sim.enable_randomization = False
-    policy, sonic_cfg = load_body_checkpoint(args.body, cfg.sim.device)
+    device = args.device or cfg.sim.device
+    policy, sonic_cfg, sim_cfg = load_body_checkpoint(args.body, device)
+    sim_cfg.mjcf = Path(args.mjcf)
+    sim_cfg.device = device
+    sim_cfg.enable_randomization = False
+    sim_cfg.enable_observation_noise = False
     paths = sorted(Path(args.motions).glob("*.npz"))[: args.max_motions]
     if not paths:
         raise SystemExit("No preprocessed motion NPZ files found")
     metrics = evaluate_body_controller(
         paths,
-        cfg.sim,
+        sim_cfg,
         sonic_cfg,
         policy,
         reward_cfg=cfg.reward,

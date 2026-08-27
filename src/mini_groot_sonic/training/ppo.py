@@ -104,7 +104,7 @@ class PPOAuxTrainer:
                 out = self.policy(prop[ix], ref[ix])
                 dist = self.policy.distribution(out.action_mean)
                 logp = dist.log_prob(action[ix]).sum(-1)
-                entropy = -dist.log_prob(dist.rsample()).sum(-1).mean()
+                entropy = dist.entropy().sum(-1).mean()
                 ratio = (logp - old_logp[ix]).exp()
                 pg1 = ratio * adv[ix]
                 pg2 = ratio.clamp(1.0 - self.cfg.clip, 1.0 + self.cfg.clip) * adv[ix]

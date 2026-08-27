@@ -36,13 +36,21 @@ def main() -> None:
     cfg.sim.mjcf = Path(args.mjcf)
     cfg.sim.device = args.device or cfg.sim.device
     cfg.sim.enable_randomization = args.randomized
+    cfg.sim.enable_observation_noise = args.randomized
     cfg.replay.output_dir = Path(args.out)
     cfg.replay.save_rgb = args.rgb
     cfg.replay.camera_name = args.camera
     sonic = cfg.sonic
     policy = None
     if args.checkpoint:
-        policy, sonic = load_policy_checkpoint(args.checkpoint, cfg.sim.device)
+        policy, sonic, checkpoint_sim = load_policy_checkpoint(
+            args.checkpoint, cfg.sim.device
+        )
+        checkpoint_sim.mjcf = Path(args.mjcf)
+        checkpoint_sim.device = cfg.sim.device
+        checkpoint_sim.enable_randomization = args.randomized
+        checkpoint_sim.enable_observation_noise = args.randomized
+        cfg.sim = checkpoint_sim
     if args.mode == "policy" and policy is None:
         raise SystemExit("--mode policy requires --checkpoint")
 

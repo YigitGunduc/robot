@@ -73,11 +73,12 @@ def test_flow_time_distribution_matches_n1d7_noise_biased_schedule():
     assert 0.3 < float(out.t.mean()) < 0.5
 
 
-def test_squashed_policy_actions_and_log_prob_are_finite():
+def test_sonic_policy_uses_unsquashed_gaussian_actions():
     cfg = SonicTinyConfig(encoder_hidden=(16,), controller_hidden=(16,), recon_hidden=(16,))
     policy = TinySonicPolicy(cfg)
     mean = torch.full((32, cfg.dof), 5.0)
     dist = policy.distribution(mean)
     action = dist.rsample()
-    assert torch.all(action > -1) and torch.all(action < 1)
+    torch.testing.assert_close(dist.mean, mean)
+    assert torch.all(action > 1.0)
     assert torch.isfinite(dist.log_prob(action)).all()

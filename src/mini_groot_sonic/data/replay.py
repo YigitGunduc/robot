@@ -6,10 +6,11 @@ from typing import Protocol
 import numpy as np
 import torch
 
-from mini_groot_sonic.checkpoint import require_current_body_control_stack
+from mini_groot_sonic.checkpoint import BODY_CONTROL_STACK_VERSION
 from mini_groot_sonic.config import ReplayConfig, SimConfig, SonicTinyConfig
 from mini_groot_sonic.data.episode_writer import EpisodeWriter
 from mini_groot_sonic.data.reference import make_reference_features
+from mini_groot_sonic.models.runtime import load_body_checkpoint
 from mini_groot_sonic.models.sonic_tiny import TinySonicPolicy
 from mini_groot_sonic.sim.mjwarp_env import MJWarpG1VecEnv
 
@@ -58,14 +59,11 @@ def load_policy_checkpoint(
     path: str | Path,
     device: str,
     cfg: SonicTinyConfig | None = None,
-) -> tuple[TinySonicPolicy, SonicTinyConfig]:
-    ckpt = torch.load(path, map_location=device, weights_only=False)
-    require_current_body_control_stack(ckpt)
-    cfg = cfg or SonicTinyConfig(**ckpt.get("sonic_cfg", {}))
-    policy = TinySonicPolicy(cfg).to(device)
-    policy.load_state_dict(ckpt.get("policy", ckpt))
-    policy.eval()
-    return policy, cfg
+) -> tuple[TinySonicPolicy, SonicTinyConfig, SimConfig]:
+    policy, checkpoint_cfg, sim_cfg = load_body_checkpoint(path, device)
+    if cfg is not None and cfg != checkpoint_cfg:
+        raise ValueError("Explicit SonicTinyConfig does not match the body checkpoint")
+    return policy, checkpoint_cfg, sim_cfg
 
 
 def _future_ref(
@@ -171,9 +169,12 @@ def collect_preprocessed_episode(
             if mode == "policy":
                 if policy is None:
                     raise ValueError("mode='policy' requires a trained TinySonicPolicy")
-                action = torch.tanh(out.action_mean)
+                action = out.action_mean.clamp(
+                    -env.action_clip_value,
+                    env.action_clip_value,
+                )
             elif mode == "reference_pd":
-                # Bootstrap replay: transform desired q into the project's normalized position-offset action space.
+                # Bootstrap replay: transform desired q into SONIC residual actions.
                 action = env.target_to_action(q[i : i + 1])
             else:
                 raise ValueError("mode must be 'policy' or 'reference_pd'")
@@ -223,5 +224,9 @@ def collect_preprocessed_episode(
             "goal_slot_names": target_body_names,
             "actor_uid": actor_uid,
             "source_motion_id": source_motion_id,
+            "body_control_stack_version": BODY_CONTROL_STACK_VERSION,
+            "body_policy_fingerprint": getattr(
+                policy, "checkpoint_fingerprint", None
+            ),
         },
     )

@@ -26,8 +26,8 @@ def main() -> None:
     ap.add_argument("--resume", default=None)
     ap.add_argument("--validation-fraction", type=float, default=0.15)
     ap.add_argument("--evaluation-chunk-iterations", type=int, default=100)
-    ap.add_argument("--minimum-stage-iterations", type=int, default=300)
-    ap.add_argument("--maximum-stage-iterations", type=int, default=3000)
+    ap.add_argument("--minimum-stage-iterations", type=int, default=1000)
+    ap.add_argument("--maximum-stage-iterations", type=int, default=20_000)
     ap.add_argument("--promotion-patience", type=int, default=2)
     ap.add_argument("--promotion-success-rate", type=float, default=0.80)
     ap.add_argument("--promotion-mpjpe", type=float, default=0.08)
@@ -35,7 +35,14 @@ def main() -> None:
     ap.add_argument("--promotion-root-orientation-error", type=float, default=0.20)
     ap.add_argument("--minimum-evaluated-motions", type=int, default=1)
     ap.add_argument("--randomization-start-stage", type=int, default=3)
-    ap.add_argument("--no-randomization", action="store_true")
+    randomization = ap.add_mutually_exclusive_group()
+    randomization.add_argument(
+        "--randomization", dest="randomization", action="store_true"
+    )
+    randomization.add_argument(
+        "--no-randomization", dest="randomization", action="store_false"
+    )
+    ap.set_defaults(randomization=None)
     args = ap.parse_args()
 
     cfg = load_project_config(args.config)
@@ -43,7 +50,8 @@ def main() -> None:
     cfg.sim.device = args.device or cfg.sim.device
     if args.num_envs is not None:
         cfg.ppo.num_envs = args.num_envs
-    cfg.sim.enable_randomization = not args.no_randomization
+    if args.randomization is not None:
+        cfg.sim.enable_randomization = args.randomization
     state = train_dynamic_curriculum(
         args.manifest,
         cfg.sim,

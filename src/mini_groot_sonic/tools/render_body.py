@@ -8,7 +8,6 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from mini_groot_sonic.config import load_project_config
 from mini_groot_sonic.data.motion_bank import MotionBank
 from mini_groot_sonic.models.runtime import load_body_checkpoint
 from mini_groot_sonic.sim.math_utils import quat_distance_angle
@@ -76,13 +75,13 @@ def render_body_rollout(
         raise ImportError("Install video extras: pip install -e '.[video]'") from exc
     import mujoco
 
-    cfg = load_project_config(config)
-    cfg.sim.mjcf = mjcf
-    cfg.sim.device = device
-    cfg.sim.enable_randomization = False
-    policy, sonic_cfg = load_body_checkpoint(checkpoint, device)
+    policy, sonic_cfg, sim_cfg = load_body_checkpoint(checkpoint, device)
+    sim_cfg.mjcf = mjcf
+    sim_cfg.device = device
+    sim_cfg.enable_randomization = False
+    sim_cfg.enable_observation_noise = False
     bank = MotionBank([motion_path], sonic_cfg, device)
-    env = MJWarpG1VecEnv(cfg.sim, sonic_cfg, 1)
+    env = MJWarpG1VecEnv(sim_cfg, sonic_cfg, 1)
     if bank.body_names != env.body_names:
         raise ValueError("Preprocessed body_names do not match the rendering MJCF")
 

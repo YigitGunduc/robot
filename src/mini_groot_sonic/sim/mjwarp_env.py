@@ -140,17 +140,8 @@ class MJWarpG1VecEnv:
                 (sonic_cfg.dof,), float(sim_cfg.action_scale), device=self.device
             )
         elif self._control_profile is not None:
-            requested_scale = torch.as_tensor(
+            self._action_scale = torch.as_tensor(
                 self._control_profile.action_scale, device=self.device
-            )
-            lower_room = self._default_joint_pos - (
-                self.joint_low + sim_cfg.joint_limit_margin
-            )
-            upper_room = (
-                self.joint_high - sim_cfg.joint_limit_margin
-            ) - self._default_joint_pos
-            self._action_scale = torch.minimum(
-                requested_scale, torch.minimum(lower_room, upper_room).clamp_min(1e-4)
             )
         else:
             self._action_scale = None
@@ -248,6 +239,14 @@ class MJWarpG1VecEnv:
     @property
     def action_scale(self) -> torch.Tensor | None:
         return self._action_scale
+
+    @property
+    def action_clip_value(self) -> float:
+        return self.sim_cfg.action_clip_value
+
+    @property
+    def last_action(self) -> torch.Tensor:
+        return self._last_action
 
     def reset(
         self,
@@ -367,11 +366,17 @@ class MJWarpG1VecEnv:
             com_noise[:, 0] = 0
             self._body_ipos[indices] = self._base_body_ipos[None] + com_noise
 
-    def action_to_target(self, normalized_action: torch.Tensor) -> torch.Tensor:
-        action = normalized_action.clamp(-1.0, 1.0)
+    def action_to_target(self, action: torch.Tensor) -> torch.Tensor:
         if self._action_scale is not None:
+            action = action.clamp(
+                -self.sim_cfg.action_clip_value,
+                self.sim_cfg.action_clip_value,
+            )
             target = self._default_joint_pos + self._action_scale * action
         else:
+            # The non-SONIC fallback maps a normalized action over each side of
+            # the joint range and therefore remains a [-1, 1] interface.
+            action = action.clamp(-1.0, 1.0)
             low = self.joint_low + self.sim_cfg.joint_limit_margin
             high = self.joint_high - self.sim_cfg.joint_limit_margin
             positive = action * (high - self._default_joint_pos)
@@ -381,7 +386,10 @@ class MJWarpG1VecEnv:
 
     def target_to_action(self, target: torch.Tensor) -> torch.Tensor:
         if self._action_scale is not None:
-            return ((target - self._default_joint_pos) / self._action_scale).clamp(-1.0, 1.0)
+            return ((target - self._default_joint_pos) / self._action_scale).clamp(
+                -self.sim_cfg.action_clip_value,
+                self.sim_cfg.action_clip_value,
+            )
         low = self.joint_low + self.sim_cfg.joint_limit_margin
         high = self.joint_high - self.sim_cfg.joint_limit_margin
         delta = target - self._default_joint_pos
@@ -399,10 +407,13 @@ class MJWarpG1VecEnv:
             pushed[:, None] * self.sim_cfg.push_velocity * direction
         )
 
-    def step(self, normalized_action: torch.Tensor) -> EnvObservation:
-        normalized_action = normalized_action.clamp(-1.0, 1.0)
-        applied_action = torch.where(self._delay_mask, self._delayed_action, normalized_action)
-        self._delayed_action.copy_(normalized_action)
+    def step(self, action: torch.Tensor) -> EnvObservation:
+        action = action.clamp(
+            -self.sim_cfg.action_clip_value,
+            self.sim_cfg.action_clip_value,
+        )
+        applied_action = torch.where(self._delay_mask, self._delayed_action, action)
+        self._delayed_action.copy_(action)
         target = self.action_to_target(applied_action)
         self._maybe_push()
         for _ in range(self.sim_cfg.decimation):
@@ -434,14 +445,22 @@ class MJWarpG1VecEnv:
         gravity_world = torch.zeros_like(root_angvel)
         gravity_world[:, 2] = -1.0
         projected_gravity = quat_rotate_inverse(root_quat, gravity_world)
-        prop_q, prop_qd = q, qd
+        prop_q, prop_qd = q - self._default_joint_pos, qd
         prop_angvel, prop_gravity = root_angvel, projected_gravity
-        if self.sim_cfg.enable_randomization:
-            prop_q = q + self.sim_cfg.observation_joint_pos_noise * torch.randn_like(q)
-            prop_qd = qd + self.sim_cfg.observation_joint_vel_noise * torch.randn_like(qd)
-            prop_angvel = root_angvel + self.sim_cfg.observation_angular_vel_noise * torch.randn_like(root_angvel)
-            prop_gravity = projected_gravity + self.sim_cfg.gravity_noise * torch.randn_like(projected_gravity)
-        prop = torch.cat([prop_q, prop_qd, prop_angvel, prop_gravity, self._last_action], dim=-1)
+        if self.sim_cfg.enable_observation_noise:
+            def uniform_noise(value: torch.Tensor, magnitude: float) -> torch.Tensor:
+                return value + magnitude * (2.0 * torch.rand_like(value) - 1.0)
+
+            prop_q = uniform_noise(prop_q, self.sim_cfg.observation_joint_pos_noise)
+            prop_qd = uniform_noise(prop_qd, self.sim_cfg.observation_joint_vel_noise)
+            prop_angvel = uniform_noise(
+                prop_angvel, self.sim_cfg.observation_angular_vel_noise
+            )
+            prop_gravity = uniform_noise(prop_gravity, self.sim_cfg.gravity_noise)
+        prop = torch.cat(
+            [prop_gravity, prop_angvel, prop_q, prop_qd, self._last_action],
+            dim=-1,
+        )
 
         body_pos = self._xpos[:, self._all_body_ids]
         body_quat = self._xquat[:, self._all_body_ids]

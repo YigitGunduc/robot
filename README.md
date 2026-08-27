@@ -34,10 +34,11 @@ planner command / text / optional vision / optional sparse 3D goals
 
 The upper model learns **what motion to request**. The body controller learns **how to physically execute it**.
 
-The 29 outputs are bounded normalized joint-position targets. By default each joint maps
-asymmetrically onto its legal range around the default pose. The simulator either sends
-those targets to MuJoCo position actuators or converts them to clipped PD torques for
-MuJoCo motor actuators.
+The 29 outputs are SONIC-style Gaussian residual actions. The policy is not squashed;
+the simulator clips actions to `[-20, 20]` once, applies the released per-joint residual
+scale around the default pose, and finally respects physical joint limits. It either sends
+the resulting targets to MuJoCo position actuators or converts them to clipped PD torques
+for MuJoCo motor actuators.
 
 ---
 
@@ -48,7 +49,7 @@ The released SONIC stack uses multiple motion encoders, FSQ, one shared G1 dynam
 This project keeps the smallest useful subset:
 
 ```text
-future G1 q/qdot + root trajectory/orientation/height/velocity (10 frames)
+future G1 q/qdot + robot-relative root orientation (10 frames)
         |
         v
 small G1 MLP encoder
@@ -63,7 +64,7 @@ small G1 MLP encoder
 small dynamic decoder
         |
         v
-29 bounded joint-position targets
+29 Gaussian residual joint-position actions
 ```
 
 The body model is trained jointly with PPO and a reconstruction auxiliary loss. That follows the released SONIC training pattern more closely than pretraining a standalone autoencoder first.
@@ -136,8 +137,9 @@ References:
 
 Python 3.11 or 3.12 is recommended on the actual GPU machine.
 
-For a fresh Google Colab run with BONES on Drive, use the SONIC-aligned v2
+For a fresh Google Colab run with BONES on Drive, use the SONIC-aligned v3
 notebook: [`notebooks/mini_groot_sonic_sonic_stack_v2_colab.ipynb`](notebooks/mini_groot_sonic_sonic_stack_v2_colab.ipynb).
+The filename is retained for existing links; its contents and run directories are v3.
 The earlier [`notebooks/mini_groot_sonic_colab.ipynb`](notebooks/mini_groot_sonic_colab.ipynb)
 is retained for comparison.
 It selects a SONIC-filtered candidate pool, builds a structured-metadata and kinematic
@@ -217,7 +219,7 @@ The defaults assume body names used by the standard Unitree G1 XML, including:
 
 ```text
 pelvis
-head_link
+torso_link
 left_wrist_yaw_link
 right_wrist_yaw_link
 left_ankle_roll_link
@@ -305,9 +307,10 @@ mgsp-train-curriculum \
   --num-envs 64 \
   --out runs/body_curriculum \
   --evaluation-chunk-iterations 100 \
-  --minimum-stage-iterations 300 \
-  --maximum-stage-iterations 3000 \
-  --promotion-patience 2
+  --minimum-stage-iterations 1000 \
+  --maximum-stage-iterations 20000 \
+  --promotion-patience 2 \
+  --randomization
 ```
 
 Stages remain cumulative, and actor/source validation groups remain permanently held out
@@ -315,8 +318,9 @@ as the curriculum expands. The default gate requires success rate `>= 0.80`, MPJ
 `<= 0.08 m`, root-position error `<= 0.08 m`, and root-orientation error `<= 0.20 rad`
 on two consecutive evaluations. Training stops before the next stage if the current one
 uses its full budget without passing. Progress and every gate decision are saved in
-`curriculum_state.json`; rerunning the command resumes safely. Randomization is disabled
-for balance and walking, then enabled from the turning stage by default.
+`curriculum_state.json`; rerunning the command resumes safely. With `--randomization`,
+randomization is disabled for balance and walking, then enabled from the turning stage.
+Without either randomization CLI flag, the value in the YAML is preserved.
 
 ## 3. Train the SONIC-like body controller manually
 
@@ -326,12 +330,15 @@ mgsp-train-body \
   --mjcf /path/to/g1_29dof.xml \
   --device cuda:0 \
   --num-envs 256 \
-  --iterations 5000 \
+  --iterations 100000 \
   --max-motions 256 \
   --out runs/body
 ```
 
-The first critical milestone is **not language**. It is:
+The `100000`-iteration default follows the convergence scale documented for released
+SONIC while retaining the smaller local network and environment count. Stop earlier only
+when the held-out gates have passed consistently. The first critical milestone is **not
+language**. It is:
 
 > one policy tracks held-out BONES motions robustly.
 
@@ -407,7 +414,7 @@ the causal `state_t -> token_t...` contract:
 mgsp-collect-replay \
   --motions data/bones_preprocessed \
   --mjcf /path/to/g1_29dof.xml \
-  --checkpoint runs/body/body_005000.pt \
+  --checkpoint runs/body/body_100000.pt \
   --mode policy \
   --out replays/train \
   --limit 1000
@@ -424,6 +431,7 @@ root pose + velocities
 reference q / qdot
 actual body positions/orientations
 sparse root/head/hand/foot goal slots
+body-stack version and exact body-policy/codebook fingerprint
 ```
 
 This produces the target tuples for the GR00T-like upper model:
@@ -432,9 +440,13 @@ This produces the target tuples for the GR00T-like upper model:
 language + current state + optional sparse goals -> future 64D token chunk
 ```
 
+Replay from legacy, reference-PD, or mixed body checkpoints is rejected by flow training.
+The resulting flow checkpoint is locked to the exact body checkpoint that produced its
+tokens, preventing a different FSQ codebook from being decoded silently at runtime.
+
 ## Bootstrap collection before the body policy is good
 
-You can also execute reference joint targets directly through the normalized action interface:
+You can also execute reference joint targets directly through the SONIC residual-action interface:
 
 ```bash
 mgsp-collect-replay \
@@ -606,13 +618,19 @@ After both checkpoints exist:
 ```bash
 mgsp-run-command \
   --mjcf /path/to/g1_29dof.xml \
-  --body runs/body/body_005000.pt \
+  --body runs/body/body_100000.pt \
   --flow runs/flow/flow_0019.pt \
+  --initial-motion data/bones_preprocessed/standing_balance.npz \
   --command "walk backward slowly while leaning to the left" \
   --device cuda:0
 ```
 
-The runtime uses a receding horizon:
+The runtime first resets to the supplied preprocessed standing/balance reference and runs
+the body policy for a one-second warm start. It refuses to continue if that controller
+cannot remain upright. It then uses a receding horizon:
+
+Use a standing/balance clip that was included when collecting the flow replay so the
+initial state is inside the upper model's training distribution.
 
 ```text
 flow model predicts: 40 future tokens
@@ -623,6 +641,14 @@ consume before replan: 20 tokens
 
 The unused tail is blended into the new chunk across the overlap, avoiding a hard token
 and joint-command discontinuity while still reconditioning on the newest robot state.
+
+## Control-stack compatibility
+
+These SONIC action and observation corrections define body control stack v3. Older body
+checkpoints, replay datasets, and flow checkpoints are intentionally rejected. Retrain the
+body controller, recollect policy replay, and then retrain flow in that order. Body
+checkpoints own the trained simulator/control configuration; deployment only overrides the
+MJCF path, device, and evaluation-time noise switches.
 
 The generated flow output is projected back to the nearest FSQ grid before the body decoder by default. This is a conservative choice because the small controller is trained on quantized tokens.
 
@@ -757,7 +783,7 @@ They cover:
 - BONES CSV parsing/resampling.
 - SONIC-style reward sanity.
 - Root-reference translation/yaw invariance.
-- Bounded PPO action likelihoods.
+- Unsquashed Gaussian PPO action likelihoods with environment-boundary clipping.
 - GR00T N1.7 timestep sampling.
 - Replay causality, goal masking and metadata deduplication.
 - Replanning overlap continuity.
@@ -769,7 +795,7 @@ The GPU MJWarp integration cannot be validated without an NVIDIA/CUDA machine an
 
 # Integration with the existing G1 stack
 
-The controller exposes 29 normalized joint-position targets. `MJWarpG1VecEnv` owns the
+The controller exposes 29 Gaussian residual joint-position actions. `MJWarpG1VecEnv` owns the
 single conversion boundary to either position control or PD torque control; deployment
 must reproduce that same target mapping, gains, gear convention and clipping.
 

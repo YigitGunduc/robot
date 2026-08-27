@@ -7,7 +7,10 @@ import numpy as np
 import torch
 
 from mini_groot_sonic.config import SonicTinyConfig
-from mini_groot_sonic.data.reference import make_reference_features
+from mini_groot_sonic.data.reference import (
+    flatten_reference_features,
+    make_reference_features,
+)
 
 
 @dataclass
@@ -256,7 +259,10 @@ class MotionBank:
     def reference_stats(self, max_samples: int = 8192) -> tuple[torch.Tensor, torch.Tensor]:
         batch = min(max_samples, max(256, len(self.lengths) * 32))
         starts = self.sample_start(batch)
-        refs = self.future_reference(starts.motion_ids, starts.frame_ids).flatten(1)
+        refs = flatten_reference_features(
+            self.future_reference(starts.motion_ids, starts.frame_ids),
+            self.cfg.dof,
+        )
         return refs.mean(0), refs.std(0).clamp_min(1e-4)
 
     def current_reference(self, motion_ids: torch.Tensor, frame_ids: torch.Tensor) -> dict[str, torch.Tensor]:

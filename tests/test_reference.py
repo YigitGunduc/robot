@@ -1,6 +1,9 @@
 import torch
 
-from mini_groot_sonic.data.reference import make_reference_features
+from mini_groot_sonic.data.reference import (
+    flatten_reference_features,
+    make_reference_features,
+)
 from mini_groot_sonic.sim.math_utils import quat_mul, quat_rotate
 
 
@@ -47,3 +50,41 @@ def test_reference_orientation_is_relative_to_current_robot():
     )
     assert identity_features.shape[-1] == 2 * dof + 6
     assert not torch.allclose(identity_features[..., -6:], yaw_features[..., -6:])
+
+
+def test_reference_flattening_matches_released_sonic_input_key_order():
+    dof = 2
+    frames = torch.tensor(
+        [
+            [
+                [1.0, 2.0, 10.0, 20.0, 100.0, 101.0, 102.0, 103.0, 104.0, 105.0],
+                [3.0, 4.0, 30.0, 40.0, 200.0, 201.0, 202.0, 203.0, 204.0, 205.0],
+            ]
+        ]
+    )
+    flattened = flatten_reference_features(frames, dof)
+    expected = torch.tensor(
+        [[
+            1.0,
+            2.0,
+            3.0,
+            4.0,
+            10.0,
+            20.0,
+            30.0,
+            40.0,
+            100.0,
+            101.0,
+            102.0,
+            103.0,
+            104.0,
+            105.0,
+            200.0,
+            201.0,
+            202.0,
+            203.0,
+            204.0,
+            205.0,
+        ]]
+    )
+    torch.testing.assert_close(flattened, expected)

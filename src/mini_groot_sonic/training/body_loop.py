@@ -7,7 +7,9 @@ import torch
 
 from mini_groot_sonic.checkpoint import (
     BODY_CONTROL_STACK_VERSION,
+    body_policy_fingerprint,
     require_current_body_control_stack,
+    require_matching_control_config,
 )
 from mini_groot_sonic.config import PPOConfig, RewardConfig, SimConfig, SonicTinyConfig
 from mini_groot_sonic.data.motion_bank import MotionBank
@@ -110,6 +112,7 @@ def train_body_controller(
     if resume_from is not None:
         checkpoint = torch.load(resume_from, map_location=device, weights_only=False)
         require_current_body_control_stack(checkpoint)
+        require_matching_control_config(checkpoint, sim_cfg)
         policy.load_state_dict(checkpoint["policy"])
         critic.load_state_dict(checkpoint["critic"])
         if "optimizer" in checkpoint:
@@ -163,16 +166,16 @@ def train_body_controller(
             future = bank.future_reference(
                 state.motion_ids, state.frame_ids, current_obs.root_quat
             )
-            if sim_cfg.enable_randomization:
+            if sim_cfg.reference_joint_noise > 0 or sim_cfg.reference_root_noise > 0:
                 future = future.clone()
                 future[..., : sonic_cfg.dof] += (
                     sim_cfg.reference_joint_noise
-                    * torch.randn_like(future[..., : sonic_cfg.dof])
+                    * (2.0 * torch.rand_like(future[..., : sonic_cfg.dof]) - 1.0)
                 )
                 root_start = sonic_cfg.dof * 2
                 future[..., root_start:] += (
                     sim_cfg.reference_root_noise
-                    * torch.randn_like(future[..., root_start:])
+                    * (2.0 * torch.rand_like(future[..., root_start:]) - 1.0)
                 )
             with torch.no_grad():
                 out = policy(prop, future)
@@ -187,12 +190,13 @@ def train_body_controller(
                 value = critic(prop, future, privileged)
 
             obs = env.step(action)
+            applied_action = env.last_action
             state.frame_ids += 1
             ref_now = bank.current_reference(state.motion_ids, state.frame_ids)
             rew = reward_fn(
                 obs,
                 ref_now,
-                action,
+                applied_action,
                 state.previous_action,
                 env.soft_joint_low,
                 env.soft_joint_high,
@@ -200,7 +204,7 @@ def train_body_controller(
                 env.control_dt,
                 env.undesired_contact_count(),
             )
-            state.previous_action = action.detach()
+            state.previous_action = applied_action.detach().clone()
             state.previous_joint_vel.copy_(obs.joint_vel.detach())
             motion_end = state.frame_ids + (sonic_cfg.future_frames - 1) * sonic_cfg.future_stride + 1 >= bank.lengths[state.motion_ids]
             done = rew.done_tracking | motion_end
@@ -215,7 +219,9 @@ def train_body_controller(
             done_buf.append(done)
             token_index_buf.append(out.token_indices)
             reward_accum += rew.total.mean()
-            action_saturation_accum += (action.abs() > 0.95).float().mean()
+            action_saturation_accum += (
+                action.abs() > 0.95 * env.action_clip_value
+            ).float().mean()
             for name, value in rew.terms.items():
                 mean_value = value.mean()
                 reward_terms[name] = reward_terms.get(name, torch.zeros_like(mean_value)) + mean_value
@@ -318,6 +324,9 @@ def train_body_controller(
                 "motion_names": bank.motion_names,
                 "validation": eval_metrics,
             }
+            checkpoint["body_policy_fingerprint"] = body_policy_fingerprint(
+                checkpoint["policy"]
+            )
             torch.save(checkpoint, checkpoint_dir / f"body_{iteration:06d}.pt")
             if eval_metrics and success >= best_success:
                 best_success = success
