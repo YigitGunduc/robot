@@ -138,8 +138,9 @@ Python 3.11 or 3.12 is recommended on the actual GPU machine.
 
 For Google Colab with BONES on Drive, use
 [`notebooks/mini_groot_sonic_colab.ipynb`](notebooks/mini_groot_sonic_colab.ipynb).
-It selectively extracts a small stand/walk/run curriculum, caches derived data and
-checkpoints on Drive, and runs a target-GPU MJWarp smoke test before PPO.
+It selects a small stand/walk/run curriculum using SONIC-style filename filtering,
+caches derived data and checkpoints on Drive, and runs a target-GPU MJWarp smoke test
+before PPO.
 
 ```bash
 cd mini_groot_sonic
@@ -189,9 +190,10 @@ Official BONES G1 CSVs contain:
 - `root_rotateX/Y/Z` in extrinsic XYZ Euler degrees
 - `<joint>_dof` in degrees, matching the G1 joint order
 
-The loader automatically reads natural-language descriptions, actor/source metadata,
-and temporal segmentation. Multi-phase motions are emitted as separately captioned
-subclips by default.
+The loader reads natural-language descriptions and actor/source metadata after a file
+has been admitted. Selection itself searches only the source path/filename, matching
+SONIC's offline filtering design. Multi-phase motions are emitted as separately
+captioned subclips by default unless `--no-temporal-segments` is used.
 
 BONES-SEED is gated/licensed; this project assumes you already have authorized access and a local copy.
 
@@ -238,7 +240,7 @@ mgsp-preprocess-bones \
   --limit 256 \
   --seed 0 \
   --include-keywords "stand,idle,walk,run,jog,turn" \
-  --exclude-keywords "jump,flip,cartwheel,crawl,stairs,climb"
+  --no-temporal-segments
 ```
 
 This:
@@ -251,13 +253,16 @@ This:
 6. Computes joint and root linear/angular velocities with MuJoCo quaternion differentiation.
 7. Runs MuJoCo forward kinematics once on CPU.
 8. Saves body positions, orientations and velocities for reward computation.
-9. Uses BONES temporal descriptions to split multi-phase clips.
+9. Optionally uses BONES temporal descriptions to split multi-phase clips.
 10. Preserves actor/source IDs for leakage-free validation splits.
 
 `--limit` is a seeded sample of BONES rather than the first files in lexical order, so
 small experiments are reproducible without silently biasing the subset toward one capture batch.
-Keyword filters search all available captions plus actor/source/category metadata and are
-applied before the limit, which makes small motion curricula straightforward.
+Keyword filters search only motion paths/filenames and are applied before the limit.
+The exclusion filter defaults to SONIC's published offline BONES denylist; supplying
+`--exclude-keywords` replaces that denylist. Captions and actor/source/category metadata
+cannot make a motion enter the subset. The Colab workflow also disables temporal-label
+expansion so a different annotated phase of a selected recording cannot enter by accident.
 
 The precomputed body tracks are important: the GPU PPO loop should not repeatedly recalculate reference kinematics on the CPU.
 

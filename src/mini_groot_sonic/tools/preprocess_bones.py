@@ -5,7 +5,12 @@ from pathlib import Path
 
 import numpy as np
 
-from mini_groot_sonic.data.bones import BonesClip, BonesSeedIndex, load_g1_csv
+from mini_groot_sonic.data.bones import (
+    SONIC_DEFAULT_FILTER_KEYWORDS,
+    BonesClip,
+    BonesSeedIndex,
+    load_g1_csv,
+)
 from mini_groot_sonic.data.preprocess import (
     precompute_mujoco_kinematics,
     save_preprocessed,
@@ -25,12 +30,12 @@ def main() -> None:
     ap.add_argument(
         "--include-keywords",
         default="",
-        help="Comma-separated caption/metadata terms; keep records matching at least one",
+        help="Comma-separated filename/path terms; keep records matching at least one",
     )
     ap.add_argument(
         "--exclude-keywords",
-        default="",
-        help="Comma-separated caption/metadata terms to reject",
+        default=",".join(SONIC_DEFAULT_FILTER_KEYWORDS),
+        help="Comma-separated filename/path terms to reject (defaults to SONIC's denylist)",
     )
     ap.add_argument("--no-temporal-segments", action="store_true")
     ap.add_argument(

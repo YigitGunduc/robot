@@ -3,7 +3,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from mini_groot_sonic.data.bones import BonesSeedIndex, load_g1_csv
+from mini_groot_sonic.data.bones import (
+    SONIC_DEFAULT_FILTER_KEYWORDS,
+    BonesSeedIndex,
+    load_g1_csv,
+    sonic_filename_allowed,
+)
 
 
 def test_bones_csv_loader(tmp_path: Path):
@@ -35,15 +40,10 @@ def test_bones_index_filters_before_seeded_limit(tmp_path: Path):
     csv_root.mkdir(parents=True)
     metadata_root.mkdir()
     rows = [
-        {
-            "motion_id": f"unextracted_{index:05d}",
-            "content_short_description": "unused motion",
-        }
-        for index in range(5001)
-    ] + [
-        {"motion_id": "easy_walk", "content_short_description": "walk forward"},
-        {"motion_id": "easy_stand", "content_short_description": "stand idle"},
-        {"motion_id": "hard_flip", "content_short_description": "back flip"},
+        {"motion_id": "metadata_only", "content_short_description": "walk forward"},
+        {"motion_id": "easy_walk", "content_short_description": "pick up a box"},
+        {"motion_id": "easy_stand", "content_short_description": "hold a heavy object"},
+        {"motion_id": "hard_flip", "content_short_description": "stand idle"},
     ]
     for row in rows:
         (csv_root / f"{row['motion_id']}.csv").touch()
@@ -59,3 +59,16 @@ def test_bones_index_filters_before_seeded_limit(tmp_path: Path):
         )
     )
     assert {stem for stem, _, _ in records} == {"easy_walk", "easy_stand"}
+
+
+def test_sonic_filename_filter_matches_paths_not_metadata():
+    assert sonic_filename_allowed("locomotion/basic_walk_forward.csv", ("walk",), ())
+    assert not sonic_filename_allowed("objects/pick_up_box.csv", ("walk",), ())
+    assert not sonic_filename_allowed("locomotion/stair_walk.csv", ("walk",))
+    assert sonic_filename_allowed("locomotion/idle.csv", exclude_keywords=())
+
+
+def test_sonic_default_filter_contains_upstream_denylist_terms():
+    assert "chair" in SONIC_DEFAULT_FILTER_KEYWORDS
+    assert "walking_on_edge" in SONIC_DEFAULT_FILTER_KEYWORDS
+    assert not sonic_filename_allowed("interactions/chair_sit_down.csv")

@@ -20,6 +20,71 @@ DESCRIPTION_COLUMNS = (
     "content_short_description_2",
 )
 
+# Keep this list in sync with SONIC's offline BONES filter. SONIC applies the
+# denylist to motion filenames/paths before preprocessing; it does not use
+# natural-language metadata to decide whether a motion is admitted.
+SONIC_DEFAULT_FILTER_KEYWORDS = (
+    "bed",
+    "bike",
+    "chair",
+    "climb",
+    "com_up_50cm",
+    "sitting",
+    "step_on",
+    "seat",
+    "table",
+    "_sit_",
+    "sit_",
+    "ladder",
+    "crutch",
+    "_bed_",
+    "_ride_",
+    "scooter",
+    "stepdown",
+    "acrobatics_",
+    "box_HSPU",
+    "cartwheel",
+    "50cm_box_",
+    "on_box",
+    "fall_from",
+    "handstand_ff_",
+    "on_1m",
+    "form_box",
+    "off_1m",
+    "230m",
+    "jump_over_obstacle_",
+    "lift_crate_come_up_",
+    "jump_to_shoulder_roll",
+    "kozak_dance",
+    "stair",
+    "handstand",
+    "box_jump",
+    "monkey_jump",
+    "safety_roll",
+    "box_dips",
+    "walking_on_edge",
+    "push_obstacle",
+)
+
+
+def sonic_filename_allowed(
+    filename: str | Path,
+    include_keywords: Sequence[str] = (),
+    exclude_keywords: Sequence[str] = SONIC_DEFAULT_FILTER_KEYWORDS,
+) -> bool:
+    """Return whether SONIC-style filename filtering admits a motion.
+
+    Matching is case-insensitive and deliberately limited to the source path.
+    Captions, temporal annotations, and other BONES metadata are not searched.
+    """
+
+    searchable = str(filename).replace("\\", "/").lower()
+    include = tuple(term.strip().lower() for term in include_keywords if term.strip())
+    exclude = tuple(term.strip().lower() for term in exclude_keywords if term.strip())
+    if any(term in searchable for term in exclude):
+        return False
+    return not include or any(term in searchable for term in include)
+
 
 @dataclass
 class BonesClip:
@@ -168,22 +233,17 @@ class BonesSeedIndex:
         preferred_column: str | None = None,
         seed: int | None = None,
         include_keywords: Sequence[str] = (),
-        exclude_keywords: Sequence[str] = (),
+        exclude_keywords: Sequence[str] = SONIC_DEFAULT_FILTER_KEYWORDS,
     ) -> Iterable[tuple[str, Path, list[str]]]:
         files = self.files.copy()
         if seed is not None:
             random.Random(seed).shuffle(files)
-        include = tuple(term.strip().lower() for term in include_keywords if term.strip())
-        exclude = tuple(term.strip().lower() for term in exclude_keywords if term.strip())
         count = 0
         for p in files:
+            source_path = p.relative_to(self.g1_root).as_posix()
+            if not sonic_filename_allowed(source_path, include_keywords, exclude_keywords):
+                continue
             captions = self.captions_for(p.stem, preferred_column)
-            metadata = self.metadata_for(p.stem)
-            searchable = " ".join([p.stem, *captions, *metadata.values()]).lower()
-            if include and not any(term in searchable for term in include):
-                continue
-            if exclude and any(term in searchable for term in exclude):
-                continue
             yield p.stem, p, captions
             count += 1
             if limit is not None and count >= limit:
