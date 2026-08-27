@@ -13,6 +13,7 @@ from mini_groot_sonic.data.motion_bank import MotionBank
 from mini_groot_sonic.models.runtime import load_body_checkpoint
 from mini_groot_sonic.sim.math_utils import quat_distance_angle
 from mini_groot_sonic.sim.mjwarp_env import MJWarpG1VecEnv
+from mini_groot_sonic.training.rewards import reanchor_reference_bodies
 
 
 def _camera(mujoco, root_position: np.ndarray, distance: float):
@@ -124,12 +125,17 @@ def render_body_rollout(
         for step in range(rollout_steps):
             safe_frame = torch.minimum(frame_ids, bank.lengths[motion_ids] - 1)
             ref_now = bank.current_reference(motion_ids, safe_frame)
+            reanchored_body_pos, _ = reanchor_reference_bodies(obs, ref_now)
             errors = {
-                "root_position_error": float((obs.root_pos - ref_now["root_pos"]).norm(dim=-1)[0]),
+                "root_position_error": float(
+                    (obs.root_pos[:, 2] - ref_now["root_pos"][:, 2]).abs()[0]
+                ),
                 "root_orientation_error": float(
                     quat_distance_angle(obs.root_quat, ref_now["root_quat"])[0]
                 ),
-                "mpjpe": float((obs.body_pos - ref_now["body_pos"]).norm(dim=-1).mean(-1)[0]),
+                "mpjpe": float(
+                    (obs.body_pos - reanchored_body_pos).norm(dim=-1).mean(-1)[0]
+                ),
                 "joint_position_error": float(
                     (obs.joint_pos - ref_now["joint_pos"]).abs().mean(-1)[0]
                 ),
@@ -166,7 +172,7 @@ def render_body_rollout(
                 writer.append_data(frame)
                 rendered_frames += 1
 
-            future = bank.future_reference(motion_ids, frame_ids)
+            future = bank.future_reference(motion_ids, frame_ids, obs.root_quat)
             action = policy.act_deterministic(env.proprio_history(), future).action_mean
             obs = env.step(action)
             frame_ids += 1

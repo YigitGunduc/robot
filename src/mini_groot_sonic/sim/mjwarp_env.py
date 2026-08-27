@@ -6,8 +6,17 @@ import numpy as np
 import torch
 
 from mini_groot_sonic.config import SimConfig, SonicTinyConfig
+from mini_groot_sonic.sim.g1_control import (
+    calibrate_position_actuators,
+    sonic_g1_control_profile,
+)
 from mini_groot_sonic.sim.g1_mapping import G1ModelMap
-from mini_groot_sonic.sim.math_utils import quat_rotate_inverse
+from mini_groot_sonic.sim.math_utils import (
+    quat_conjugate,
+    quat_mul,
+    quat_rotate_inverse,
+    quat_to_rotation_6d,
+)
 
 
 @dataclass
@@ -57,6 +66,17 @@ class MJWarpG1VecEnv:
             sim_cfg.root_body_name,
             tuple(sim_cfg.keypoint_body_names),
         )
+        self._control_profile = None
+        if sim_cfg.sonic_g1_control:
+            self._control_profile = sonic_g1_control_profile(self.map.joint_names)
+            if self.map.actuator_is_position.all():
+                calibrate_position_actuators(self.mjm, self.map, self._control_profile)
+                # Refresh actuator metadata after modifying the compiled model.
+                self.map = G1ModelMap.from_mjmodel(
+                    self.mjm,
+                    sim_cfg.root_body_name,
+                    tuple(sim_cfg.keypoint_body_names),
+                )
         self._batched_dynamics = False
         if sim_cfg.enable_randomization:
             try:
@@ -100,11 +120,40 @@ class MJWarpG1VecEnv:
         self._joint_qpos_adr = torch.as_tensor(self.map.joint_qpos_adr, device=self.device)
         self._joint_dof_adr = torch.as_tensor(self.map.joint_dof_adr, device=self.device)
         self._actuator_ids = torch.as_tensor(self.map.actuator_ids, device=self.device)
-        self._default_joint_pos = torch.as_tensor(self.map.default_joint_pos, device=self.device)
+        default_joint_pos = (
+            self._control_profile.default_joint_pos
+            if self._control_profile is not None
+            else self.map.default_joint_pos
+        )
+        default_joint_pos = np.clip(default_joint_pos, self.map.joint_low, self.map.joint_high)
+        self._default_joint_pos = torch.as_tensor(default_joint_pos, device=self.device)
         self._ctrl_low = torch.as_tensor(self.map.ctrl_low, device=self.device)
         self._ctrl_high = torch.as_tensor(self.map.ctrl_high, device=self.device)
         self.joint_low = torch.as_tensor(self.map.joint_low, device=self.device)
         self.joint_high = torch.as_tensor(self.map.joint_high, device=self.device)
+        joint_mid = 0.5 * (self.joint_low + self.joint_high)
+        joint_half_range = 0.5 * (self.joint_high - self.joint_low)
+        self.soft_joint_low = joint_mid - sim_cfg.soft_joint_limit_factor * joint_half_range
+        self.soft_joint_high = joint_mid + sim_cfg.soft_joint_limit_factor * joint_half_range
+        if sim_cfg.action_scale is not None:
+            self._action_scale = torch.full(
+                (sonic_cfg.dof,), float(sim_cfg.action_scale), device=self.device
+            )
+        elif self._control_profile is not None:
+            requested_scale = torch.as_tensor(
+                self._control_profile.action_scale, device=self.device
+            )
+            lower_room = self._default_joint_pos - (
+                self.joint_low + sim_cfg.joint_limit_margin
+            )
+            upper_room = (
+                self.joint_high - sim_cfg.joint_limit_margin
+            ) - self._default_joint_pos
+            self._action_scale = torch.minimum(
+                requested_scale, torch.minimum(lower_room, upper_room).clamp_min(1e-4)
+            )
+        else:
+            self._action_scale = None
         position_mask = self.map.actuator_is_position
         if sim_cfg.actuator_mode == "auto":
             if position_mask.all():
@@ -128,8 +177,20 @@ class MJWarpG1VecEnv:
                 raise ValueError("PD torque control requires non-zero actuator gear ratios")
         self._actuator_gear = torch.as_tensor(self.map.actuator_gear, device=self.device)
 
-        self._kp = torch.full((num_envs, sonic_cfg.dof), sim_cfg.joint_stiffness, device=self.device)
-        self._kd = torch.full((num_envs, sonic_cfg.dof), sim_cfg.joint_damping, device=self.device)
+        base_kp = (
+            torch.as_tensor(self._control_profile.stiffness, device=self.device)
+            if self._control_profile is not None
+            else torch.full((sonic_cfg.dof,), sim_cfg.joint_stiffness, device=self.device)
+        )
+        base_kd = (
+            torch.as_tensor(self._control_profile.damping, device=self.device)
+            if self._control_profile is not None
+            else torch.full((sonic_cfg.dof,), sim_cfg.joint_damping, device=self.device)
+        )
+        self._base_kp = base_kp
+        self._base_kd = base_kd
+        self._kp = base_kp[None].repeat(num_envs, 1)
+        self._kd = base_kd[None].repeat(num_envs, 1)
         self._motor_strength = torch.ones(num_envs, sonic_cfg.dof, device=self.device)
         self._delayed_action = torch.zeros_like(self._last_action)
         self._delay_mask = torch.zeros(num_envs, 1, dtype=torch.bool, device=self.device)
@@ -179,6 +240,14 @@ class MJWarpG1VecEnv:
     @property
     def joint_names(self) -> list[str]:
         return self.map.joint_names
+
+    @property
+    def default_joint_pos(self) -> torch.Tensor:
+        return self._default_joint_pos
+
+    @property
+    def action_scale(self) -> torch.Tensor | None:
+        return self._action_scale
 
     def reset(
         self,
@@ -266,8 +335,8 @@ class MJWarpG1VecEnv:
 
     def _randomize_actuators(self, indices: torch.Tensor) -> None:
         if not self.sim_cfg.enable_randomization:
-            self._kp[indices] = self.sim_cfg.joint_stiffness
-            self._kd[indices] = self.sim_cfg.joint_damping
+            self._kp[indices] = self._base_kp
+            self._kd[indices] = self._base_kd
             self._motor_strength[indices] = 1.0
             self._delay_mask[indices] = False
             return
@@ -277,8 +346,8 @@ class MJWarpG1VecEnv:
             return low + (high - low) * torch.rand(shape, device=self.device)
 
         shape = (len(indices), self.sonic_cfg.dof)
-        self._kp[indices] = self.sim_cfg.joint_stiffness * uniform(self.sim_cfg.stiffness_range, shape)
-        self._kd[indices] = self.sim_cfg.joint_damping * uniform(self.sim_cfg.damping_range, shape)
+        self._kp[indices] = self._base_kp[None] * uniform(self.sim_cfg.stiffness_range, shape)
+        self._kd[indices] = self._base_kd[None] * uniform(self.sim_cfg.damping_range, shape)
         self._motor_strength[indices] = uniform(self.sim_cfg.motor_strength_range, shape)
         self._delay_mask[indices] = (
             torch.rand(len(indices), 1, device=self.device) < self.sim_cfg.action_delay_probability
@@ -300,8 +369,8 @@ class MJWarpG1VecEnv:
 
     def action_to_target(self, normalized_action: torch.Tensor) -> torch.Tensor:
         action = normalized_action.clamp(-1.0, 1.0)
-        if self.sim_cfg.action_scale is not None:
-            target = self._default_joint_pos + self.sim_cfg.action_scale * action
+        if self._action_scale is not None:
+            target = self._default_joint_pos + self._action_scale * action
         else:
             low = self.joint_low + self.sim_cfg.joint_limit_margin
             high = self.joint_high - self.sim_cfg.joint_limit_margin
@@ -311,8 +380,8 @@ class MJWarpG1VecEnv:
         return torch.maximum(torch.minimum(target, self.joint_high), self.joint_low)
 
     def target_to_action(self, target: torch.Tensor) -> torch.Tensor:
-        if self.sim_cfg.action_scale is not None:
-            return ((target - self._default_joint_pos) / self.sim_cfg.action_scale).clamp(-1.0, 1.0)
+        if self._action_scale is not None:
+            return ((target - self._default_joint_pos) / self._action_scale).clamp(-1.0, 1.0)
         low = self.joint_low + self.sim_cfg.joint_limit_margin
         high = self.joint_high - self.sim_cfg.joint_limit_margin
         delta = target - self._default_joint_pos
@@ -397,18 +466,58 @@ class MJWarpG1VecEnv:
     def proprio_history(self) -> torch.Tensor:
         return self._history.flatten(1)
 
-    def privileged_observation(self, obs: EnvObservation | None = None) -> torch.Tensor:
+    def privileged_observation(
+        self,
+        obs: EnvObservation | None = None,
+        reference_root_pos: torch.Tensor | None = None,
+        reference_root_quat: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         obs = obs or self.observe()
+        root_quat = obs.root_quat[:, None].expand_as(obs.body_quat)
+        body_pos_local = quat_rotate_inverse(
+            root_quat, obs.body_pos - obs.root_pos[:, None]
+        )
+        body_quat_local = self._relative_body_quat(obs.root_quat, obs.body_quat)
+        body_ori_6d = quat_to_rotation_6d(body_quat_local)
+        if reference_root_pos is None:
+            reference_root_pos = obs.root_pos
+        if reference_root_quat is None:
+            reference_root_quat = obs.root_quat
+        anchor_pos_local = quat_rotate_inverse(
+            obs.root_quat, reference_root_pos - obs.root_pos
+        )
+        anchor_ori_local = quat_to_rotation_6d(
+            quat_mul(quat_conjugate(obs.root_quat), reference_root_quat)
+        )
+        base_linvel_local = quat_rotate_inverse(obs.root_quat, obs.root_linvel)
         return torch.cat(
-            [obs.joint_pos, obs.joint_vel, obs.root_quat, obs.root_linvel, obs.root_angvel],
+            [
+                obs.joint_pos,
+                obs.joint_vel,
+                anchor_pos_local,
+                anchor_ori_local,
+                base_linvel_local,
+                obs.root_angvel,
+                body_pos_local.flatten(1),
+                body_ori_6d.flatten(1),
+            ],
             dim=-1,
         )
+
+    @staticmethod
+    def _relative_body_quat(root_quat: torch.Tensor, body_quat: torch.Tensor) -> torch.Tensor:
+        root_inv = quat_conjugate(root_quat)[:, None].expand_as(body_quat)
+        return quat_mul(root_inv, body_quat)
+
+    @property
+    def privileged_dim(self) -> int:
+        return 2 * self.sonic_cfg.dof + 15 + 9 * len(self.body_names)
 
     def undesired_contact_count(self) -> torch.Tensor:
         geom = self._contact_geom.long()
         world = self._contact_world.long()
         valid = (world >= 0) & (world < self.num_envs) & (geom[:, 0] >= 0) & (geom[:, 1] >= 0)
-        valid &= self._contact_dist <= 0.0
+        valid &= self._contact_dist <= -self.sim_cfg.undesired_contact_penetration
         safe_geom = geom.clamp(0, max(len(self._geom_bodyid) - 1, 0))
         body0 = self._geom_bodyid[safe_geom[:, 0]]
         body1 = self._geom_bodyid[safe_geom[:, 1]]
@@ -420,8 +529,13 @@ class MJWarpG1VecEnv:
         else:
             allowed = torch.zeros_like(valid)
         undesired = valid & (self_contact | (ground_contact & ~allowed))
+        # Count affected bodies rather than raw contact points; a multi-point foot
+        # collision should not be penalized several times merely due to geometry.
+        pairs = world[undesired] * self.mjm.nbody + robot_body[undesired]
+        unique_pairs = torch.unique(pairs)
+        unique_worlds = torch.div(unique_pairs, self.mjm.nbody, rounding_mode="floor")
         counts = torch.zeros(self.num_envs, device=self.device)
-        counts.scatter_add_(0, world[undesired], torch.ones_like(world[undesired], dtype=counts.dtype))
+        counts.scatter_add_(0, unique_worlds, torch.ones_like(unique_worlds, dtype=counts.dtype))
         return counts
 
     def mean_abs_actuator_force(self) -> torch.Tensor:

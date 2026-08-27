@@ -136,8 +136,10 @@ References:
 
 Python 3.11 or 3.12 is recommended on the actual GPU machine.
 
-For Google Colab with BONES on Drive, use
-[`notebooks/mini_groot_sonic_colab.ipynb`](notebooks/mini_groot_sonic_colab.ipynb).
+For a fresh Google Colab run with BONES on Drive, use the SONIC-aligned v2
+notebook: [`notebooks/mini_groot_sonic_sonic_stack_v2_colab.ipynb`](notebooks/mini_groot_sonic_sonic_stack_v2_colab.ipynb).
+The earlier [`notebooks/mini_groot_sonic_colab.ipynb`](notebooks/mini_groot_sonic_colab.ipynb)
+is retained for comparison.
 It selects a SONIC-filtered candidate pool, builds a structured-metadata and kinematic
 five-stage curriculum, caches derived data and checkpoints on Drive, and dynamically
 promotes stages using held-out metrics.
@@ -336,7 +338,7 @@ The first critical milestone is **not language**. It is:
 The training path is:
 
 ```text
-BONES future q/qdot + invariant root motion
+BONES future q/qdot + robot-relative root orientation
        |
        v
 G1 encoder -> FSQ 64D token
@@ -346,7 +348,7 @@ G1 encoder -> FSQ 64D token
 64D token + 10-step proprio history
        |
        v
-body decoder -> 29 bounded joint-position targets
+body decoder -> 29 SONIC-calibrated joint-position residuals
        |
        v
 MJWarp G1 physics
@@ -355,10 +357,19 @@ MJWarp G1 physics
 SONIC-style tracking reward + PPO
 ```
 
-Training enables observation/reference noise, randomized friction, mass, COM, motor
-strength, PD gains and one-step latency, plus occasional root pushes. The critic receives
-clean privileged state. Motion sampling is duration-aware and gradually upweights failed
-motions with a cap.
+The Menagerie G1 position servos are recalibrated at load time with SONIC's per-joint
+stiffness, damping, armature and effort limits. Actions use SONIC's small per-joint
+residual scales around its crouched default pose instead of spanning full joint limits.
+
+Training adds 10% freeze-frame balance augmentation and samples one-second motion bins,
+shifting starts up to four seconds before difficult bins. Failure-targeted sampling is
+blended with 10% uniform coverage. PPO adapts the actor learning rate from KL instead of
+discarding the rest of an update, and the critic receives clean root-relative full-body
+state. Tracking termination uses root/end-effector height, root orientation, and local
+foot error; horizontal trajectory drift alone does not terminate an episode.
+
+These changes alter action semantics, reference dimensions, and critic dimensions.
+Checkpoints made before control-stack version 2 cannot be resumed; start a new run.
 
 Training automatically reserves a validation group. Actor IDs are used when present;
 otherwise source-motion IDs are used so temporal segments never cross the split.
@@ -675,10 +686,10 @@ frozen SigLIP2
 With `configs/default.yaml`, the trainable footprint is approximately:
 
 ```text
-body actor:   1.27M parameters
-body critic:  0.80M parameters
+body actor:   1.13M parameters
+body critic:  0.87M parameters (30-body G1 asset)
 flow model:   1.76M parameters
-total:        3.83M parameters (excluding frozen SigLIP2)
+total:        3.76M parameters (excluding frozen SigLIP2)
 ```
 
 That is intentional.
@@ -709,10 +720,11 @@ mgsp-eval-body \
   --body runs/body/body_best.pt
 ```
 
-The report includes success rate, root position/orientation error, MPJPE, joint error,
-action rate, undesired contacts, and mean absolute actuator force. Training also logs
-individual reward terms, FSQ occupancy/saturation, policy/value/reconstruction losses,
-KL, and held-out metrics.
+The report includes success rate, root-height error, diagnostic root-XY drift,
+root-orientation error, heading-local MPJPE, joint error, action rate, undesired contacts,
+and mean absolute actuator force. Training also logs individual reward terms, FSQ
+occupancy/saturation, action saturation, failures per reset, actor learning rate,
+policy/value/reconstruction losses, KL, and held-out metrics.
 
 Render a held-out rollout beside its BONES reference for visual inspection:
 

@@ -27,7 +27,14 @@ def main() -> None:
     paths = sorted(Path(args.motions).glob("*.npz"))[: args.max_motions]
     if not paths:
         raise SystemExit("No preprocessed motion NPZ files found")
-    metrics = evaluate_body_controller(paths, cfg.sim, sonic_cfg, policy, max_motions=args.max_motions)
+    metrics = evaluate_body_controller(
+        paths,
+        cfg.sim,
+        sonic_cfg,
+        policy,
+        reward_cfg=cfg.reward,
+        max_motions=args.max_motions,
+    )
     print(json.dumps(metrics, indent=2, sort_keys=True))
 
 

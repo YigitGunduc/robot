@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from mini_groot_sonic.config import SonicTinyConfig
 from mini_groot_sonic.data.curriculum import (
     STAGE_NAMES,
     build_curriculum,
@@ -38,6 +39,9 @@ def _write_motion(
     body_pos = np.repeat(root_pos[:, None], 3, axis=1)
     body_pos[:, :, 2] += np.asarray([0.0, 0.2, -0.1], np.float32)
     body_linvel = np.repeat(root_linvel[:, None], 3, axis=1)
+    root_quat = np.zeros((frames, 4), np.float32)
+    root_quat[:, 0] = 1.0
+    body_quat = np.repeat(root_quat[:, None], 3, axis=1)
     np.savez_compressed(
         path,
         motion_id=np.asarray(motion_id, dtype=object),
@@ -54,14 +58,19 @@ def _write_motion(
         content_complex_action=np.asarray("0", dtype=object),
         content_type_of_movement=np.asarray(movement, dtype=object),
         content_body_position=np.asarray("standing", dtype=object),
+        joint_pos=np.zeros((frames, 29), np.float32),
         joint_vel=np.full((frames, 29), joint_speed, np.float32),
         root_pos=root_pos,
+        root_quat=root_quat,
         root_linvel=root_linvel,
         root_angvel=root_angvel,
         body_pos=body_pos,
+        body_quat=body_quat,
         body_linvel=body_linvel,
+        body_angvel=np.zeros_like(body_linvel),
         body_names=np.asarray(["pelvis", "left_wrist", "left_foot"], dtype=object),
         fps=np.asarray(50.0, np.float32),
+        caption=np.asarray(movement, dtype=object),
     )
 
 
@@ -179,3 +188,34 @@ def test_failure_sampling_blends_uniform_coverage_with_failed_motions():
     torch.testing.assert_close(weights.sum(), torch.tensor(1.0))
     assert weights[1] > weights[0]
     assert weights[0] > 0 and weights[2] > 0
+
+
+def test_failure_sampling_targets_one_second_segments(tmp_path: Path):
+    path = tmp_path / "long_stand.npz"
+    _write_motion(path, "long_stand", "standing", actor="actor")
+    cfg = SonicTinyConfig(future_frames=2, future_stride=1)
+    bank = MotionBank(
+        [path],
+        cfg,
+        "cpu",
+        adaptive_sampling_bin_frames=10,
+        pre_failure_sample_window=0,
+    )
+    assert len(bank.failure_ema) == 2
+    bank.update_failures(torch.tensor([0]), torch.tensor([15]), torch.tensor([True]))
+    assert bank.failure_ema[1] > bank.failure_ema[0]
+    assert bank.sampling_weights()[1] > bank.sampling_weights()[0]
+
+
+def test_freeze_frame_augmentation_freezes_pose_and_velocities(tmp_path: Path):
+    path = tmp_path / "walk.npz"
+    _write_motion(path, "walk", "walking", actor="actor", speed=0.5)
+    cfg = SonicTinyConfig(future_frames=2, future_stride=1)
+    torch.manual_seed(3)
+    bank = MotionBank([path], cfg, "cpu", freeze_frame_probability=1.0)
+    freeze_at = int(bank.freeze_frames[0])
+    assert freeze_at >= 0
+    expected = bank.root_pos[0, freeze_at].expand_as(bank.root_pos[0, freeze_at:])
+    torch.testing.assert_close(bank.root_pos[0, freeze_at:], expected)
+    assert not bank.joint_vel[0, freeze_at:].any()
+    assert not bank.body_linvel[0, freeze_at:].any()

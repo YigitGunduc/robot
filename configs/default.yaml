@@ -21,12 +21,20 @@ ppo:
   clip: 0.2
   entropy_coef: 0.013
   actor_lr: 2.0e-5
+  actor_lr_min: 1.0e-5
+  actor_lr_max: 2.0e-4
+  kl_adaptation_factor: 1.5
   critic_lr: 1.0e-3
   aux_recon_coef: 0.01
   target_kl: 0.01
   seed: 0
   checkpoint_interval: 100
   eval_interval: 100
+  failure_sampling_alpha: 0.9
+  failure_sampling_cap: 200.0
+  adaptive_sampling_bin_frames: 50
+  pre_failure_sample_window: 200
+  freeze_frame_probability: 0.1
 
 flow:
   action_dim: 64
@@ -51,9 +59,12 @@ sim:
   nconmax: 48
   njmax: 288
   action_scale: null
+  sonic_g1_control: true
   actuator_mode: auto
   joint_stiffness: 80.0
   joint_damping: 2.0
+  soft_joint_limit_factor: 0.9
+  undesired_contact_penetration: 1.0e-4
   enable_randomization: false
 
 replay:

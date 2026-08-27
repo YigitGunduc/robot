@@ -4,6 +4,7 @@ from pathlib import Path
 
 import torch
 
+from mini_groot_sonic.checkpoint import require_current_body_control_stack
 from mini_groot_sonic.config import FlowConfig, SonicTinyConfig
 from mini_groot_sonic.models.flow_policy import TinyFlowMotionPolicy
 from mini_groot_sonic.models.frozen_backbones import FrozenSiglip2
@@ -25,6 +26,7 @@ def load_body_checkpoint(
     device: str,
 ) -> tuple[TinySonicPolicy, SonicTinyConfig]:
     ckpt = torch.load(path, map_location=device, weights_only=False)
+    require_current_body_control_stack(ckpt)
     cfg = SonicTinyConfig(**ckpt.get("sonic_cfg", {}))
     model = TinySonicPolicy(cfg).to(device)
     model.load_state_dict(ckpt.get("policy", ckpt))

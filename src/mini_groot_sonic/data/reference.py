@@ -5,7 +5,6 @@ import torch
 from mini_groot_sonic.sim.math_utils import (
     quat_conjugate,
     quat_mul,
-    quat_rotate_inverse,
     quat_to_rotation_6d,
 )
 
@@ -17,27 +16,18 @@ def make_reference_features(
     root_quat: torch.Tensor,
     root_linvel: torch.Tensor,
     root_angvel: torch.Tensor,
+    robot_root_quat: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Build heading/translation-invariant SONIC reference frames.
+    """Build the released SONIC G1 encoder reference frames.
 
-    Inputs have shape [B,F,*]; output is [B,F,2*dof+16].
+    Inputs have shape [B,F,*]; output is [B,F,2*dof+6]. Root translation and
+    velocities are deliberately excluded; the robot encoder receives future
+    q/qdot plus reference orientation relative to the current robot root.
     """
-    origin_quat = root_quat[:, :1].expand_as(root_quat)
-    root_delta = quat_rotate_inverse(origin_quat, root_pos - root_pos[:, :1])
-    relative_quat = quat_mul(quat_conjugate(origin_quat), root_quat)
+    del root_pos, root_linvel, root_angvel
+    if robot_root_quat is None:
+        robot_root_quat = root_quat[:, 0]
+    robot_quat = robot_root_quat[:, None].expand_as(root_quat)
+    relative_quat = quat_mul(quat_conjugate(robot_quat), root_quat)
     root_rot6d = quat_to_rotation_6d(relative_quat)
-    local_linvel = quat_rotate_inverse(root_quat, root_linvel)
-    # MuJoCo free-joint angular velocity already lives in the local body frame.
-    local_angvel = root_angvel
-    return torch.cat(
-        [
-            joint_pos,
-            joint_vel,
-            root_delta,
-            root_rot6d,
-            root_pos[..., 2:3],
-            local_linvel,
-            local_angvel,
-        ],
-        dim=-1,
-    )
+    return torch.cat([joint_pos, joint_vel, root_rot6d], dim=-1)

@@ -6,6 +6,7 @@ from typing import Protocol
 import numpy as np
 import torch
 
+from mini_groot_sonic.checkpoint import require_current_body_control_stack
 from mini_groot_sonic.config import ReplayConfig, SimConfig, SonicTinyConfig
 from mini_groot_sonic.data.episode_writer import EpisodeWriter
 from mini_groot_sonic.data.reference import make_reference_features
@@ -59,6 +60,7 @@ def load_policy_checkpoint(
     cfg: SonicTinyConfig | None = None,
 ) -> tuple[TinySonicPolicy, SonicTinyConfig]:
     ckpt = torch.load(path, map_location=device, weights_only=False)
+    require_current_body_control_stack(ckpt)
     cfg = cfg or SonicTinyConfig(**ckpt.get("sonic_cfg", {}))
     policy = TinySonicPolicy(cfg).to(device)
     policy.load_state_dict(ckpt.get("policy", ckpt))
@@ -75,6 +77,7 @@ def _future_ref(
     root_angvel: torch.Tensor,
     i: int,
     cfg: SonicTinyConfig,
+    robot_root_quat: torch.Tensor | None = None,
 ) -> torch.Tensor:
     ids = torch.arange(cfg.future_frames, device=q.device) * cfg.future_stride + i
     ids = ids.clamp_max(q.shape[0] - 1)
@@ -85,6 +88,7 @@ def _future_ref(
         root_quat[ids][None],
         root_linvel[ids][None],
         root_angvel[ids][None],
+        robot_root_quat,
     )
 
 
@@ -145,7 +149,17 @@ def collect_preprocessed_episode(
 
     max_i = max(1, len(q) - (sonic_cfg.future_frames - 1) * sonic_cfg.future_stride)
     for i in range(max_i):
-        future = _future_ref(q, qd, root_pos, root_quat, root_linvel, root_angvel, i, sonic_cfg)
+        future = _future_ref(
+            q,
+            qd,
+            root_pos,
+            root_quat,
+            root_linvel,
+            root_angvel,
+            i,
+            sonic_cfg,
+            obs.root_quat,
+        )
         prop = env.proprio_history()
         with torch.no_grad():
             if policy is not None:

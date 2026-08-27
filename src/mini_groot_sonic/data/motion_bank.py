@@ -32,6 +32,9 @@ class MotionBank:
         max_memory_gb: float = 8.0,
         failure_sampling_alpha: float = 0.5,
         failure_sampling_cap: float = 4.0,
+        adaptive_sampling_bin_frames: int = 50,
+        pre_failure_sample_window: int = 0,
+        freeze_frame_probability: float = 0.0,
     ):
         if not paths:
             raise ValueError("MotionBank requires at least one preprocessed clip")
@@ -39,6 +42,9 @@ class MotionBank:
         self.device = torch.device(device)
         self.failure_sampling_alpha = min(1.0, max(0.0, failure_sampling_alpha))
         self.failure_sampling_cap = max(1.0, failure_sampling_cap)
+        self.adaptive_sampling_bin_frames = max(1, adaptive_sampling_bin_frames)
+        self.pre_failure_sample_window = max(0, pre_failure_sample_window)
+        self.freeze_frame_probability = min(1.0, max(0.0, freeze_frame_probability))
         clips = [np.load(p, allow_pickle=True) for p in paths]
         self.lengths = torch.tensor([len(c["joint_pos"]) for c in clips], device=self.device, dtype=torch.long)
         self.captions = [str(c["caption"].item()) for c in clips]
@@ -88,18 +94,71 @@ class MotionBank:
                 getattr(self, name)[i, :t] = torch.from_numpy(np.asarray(values, dtype=np.float32)).to(self.device)
                 if t < max_t:
                     getattr(self, name)[i, t:] = getattr(self, name)[i, t - 1]
-        valid_starts = (self.lengths - ((self.cfg.future_frames - 1) * self.cfg.future_stride + 2)).clamp_min(1)
-        self.base_sampling_weights = valid_starts.float()
-        self.failure_ema = torch.zeros(n, device=self.device)
+        self.freeze_frames = torch.full((n,), -1, dtype=torch.long, device=self.device)
+        self._apply_freeze_frame_augmentation()
+
+        self.valid_starts = (
+            self.lengths
+            - ((self.cfg.future_frames - 1) * self.cfg.future_stride + 2)
+        ).clamp_min(1)
+        bin_motion_ids: list[int] = []
+        bin_starts: list[int] = []
+        bin_ends: list[int] = []
+        motion_bin_offsets = [0]
+        for motion_id, valid_count in enumerate(self.valid_starts.tolist()):
+            for start in range(0, valid_count, self.adaptive_sampling_bin_frames):
+                bin_motion_ids.append(motion_id)
+                bin_starts.append(start)
+                bin_ends.append(min(start + self.adaptive_sampling_bin_frames, valid_count))
+            motion_bin_offsets.append(len(bin_motion_ids))
+        self.bin_motion_ids = torch.tensor(bin_motion_ids, device=self.device, dtype=torch.long)
+        self.bin_starts = torch.tensor(bin_starts, device=self.device, dtype=torch.long)
+        self.bin_ends = torch.tensor(bin_ends, device=self.device, dtype=torch.long)
+        self.motion_bin_offsets = torch.tensor(
+            motion_bin_offsets, device=self.device, dtype=torch.long
+        )
+        self.base_sampling_weights = (self.bin_ends - self.bin_starts).float()
+        self.failure_ema = torch.zeros(len(bin_motion_ids), device=self.device)
         for clip in clips:
             clip.close()
 
+    @torch.no_grad()
+    def _apply_freeze_frame_augmentation(self) -> None:
+        if self.freeze_frame_probability <= 0.0:
+            return
+        pose_fields = ("joint_pos", "root_pos", "root_quat", "body_pos", "body_quat")
+        velocity_fields = (
+            "joint_vel",
+            "root_linvel",
+            "root_angvel",
+            "body_linvel",
+            "body_angvel",
+        )
+        selected = torch.rand(len(self.lengths), device=self.device) < self.freeze_frame_probability
+        for motion_id in selected.nonzero(as_tuple=False).squeeze(-1).tolist():
+            length = int(self.lengths[motion_id])
+            freeze_at = int(torch.randint(length, (), device=self.device))
+            self.freeze_frames[motion_id] = freeze_at
+            for name in pose_fields:
+                values = getattr(self, name)
+                values[motion_id, freeze_at:] = values[motion_id, freeze_at].clone()
+            for name in velocity_fields:
+                getattr(self, name)[motion_id, freeze_at:] = 0.0
+
     def sample_start(self, batch: int) -> MotionBankBatch:
         weights = self.sampling_weights()
-        motion_ids = torch.multinomial(weights, batch, replacement=True)
-        max_offset = (self.cfg.future_frames - 1) * self.cfg.future_stride + 2
-        max_start = (self.lengths[motion_ids] - max_offset).clamp_min(1)
-        frame_ids = (torch.rand(batch, device=self.device) * max_start.float()).long()
+        bin_ids = torch.multinomial(weights, batch, replacement=True)
+        motion_ids = self.bin_motion_ids[bin_ids]
+        starts = self.bin_starts[bin_ids]
+        ends = self.bin_ends[bin_ids]
+        frame_ids = starts + (torch.rand(batch, device=self.device) * (ends - starts).float()).long()
+        if self.pre_failure_sample_window > 0:
+            offsets = torch.randint(
+                self.pre_failure_sample_window,
+                (batch,),
+                device=self.device,
+            )
+            frame_ids = (frame_ids - offsets).clamp_min(0)
         return MotionBankBatch(motion_ids, frame_ids)
 
     @torch.no_grad()
@@ -127,9 +186,15 @@ class MotionBank:
     def update_failures(
         self,
         motion_ids: torch.Tensor,
+        frame_ids: torch.Tensor,
         failed: torch.Tensor,
     ) -> None:
-        unique_ids, inverse = motion_ids.unique(return_inverse=True)
+        safe_frames = torch.minimum(frame_ids, self.valid_starts[motion_ids] - 1)
+        local_bins = torch.div(
+            safe_frames, self.adaptive_sampling_bin_frames, rounding_mode="floor"
+        )
+        bin_ids = self.motion_bin_offsets[motion_ids] + local_bins
+        unique_ids, inverse = bin_ids.unique(return_inverse=True)
         totals = torch.zeros(len(unique_ids), device=self.device)
         counts = torch.zeros_like(totals)
         totals.scatter_add_(0, inverse, failed.float())
@@ -140,7 +205,35 @@ class MotionBank:
         )
         self.failure_ema.clamp_(0.0, 1.0)
 
-    def future_reference(self, motion_ids: torch.Tensor, frame_ids: torch.Tensor) -> torch.Tensor:
+    def adaptive_sampling_state(self) -> dict[str, torch.Tensor]:
+        return {
+            "failure_ema": self.failure_ema.detach().cpu(),
+            "bin_motion_ids": self.bin_motion_ids.detach().cpu(),
+            "bin_starts": self.bin_starts.detach().cpu(),
+            "bin_ends": self.bin_ends.detach().cpu(),
+        }
+
+    @torch.no_grad()
+    def load_adaptive_sampling_state(self, state: dict[str, torch.Tensor] | None) -> bool:
+        if not state:
+            return False
+        for name in ("bin_motion_ids", "bin_starts", "bin_ends"):
+            value = state.get(name)
+            current = getattr(self, name)
+            if value is None or not torch.equal(value.cpu(), current.cpu()):
+                return False
+        failure_ema = state.get("failure_ema")
+        if failure_ema is None or failure_ema.numel() != self.failure_ema.numel():
+            return False
+        self.failure_ema.copy_(failure_ema.to(self.device))
+        return True
+
+    def future_reference(
+        self,
+        motion_ids: torch.Tensor,
+        frame_ids: torch.Tensor,
+        robot_root_quat: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         offsets = torch.arange(self.cfg.future_frames, device=self.device) * self.cfg.future_stride
         ids = frame_ids[:, None] + offsets[None, :]
         q = self.joint_pos[motion_ids[:, None], ids]
@@ -149,7 +242,15 @@ class MotionBank:
         root_quat = self.root_quat[motion_ids[:, None], ids]
         root_linvel = self.root_linvel[motion_ids[:, None], ids]
         root_angvel = self.root_angvel[motion_ids[:, None], ids]
-        return make_reference_features(q, qd, root_pos, root_quat, root_linvel, root_angvel)
+        return make_reference_features(
+            q,
+            qd,
+            root_pos,
+            root_quat,
+            root_linvel,
+            root_angvel,
+            robot_root_quat,
+        )
 
     @torch.no_grad()
     def reference_stats(self, max_samples: int = 8192) -> tuple[torch.Tensor, torch.Tensor]:

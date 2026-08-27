@@ -42,6 +42,22 @@ class PPOAuxTrainer:
             ]
         )
 
+    @property
+    def actor_lr(self) -> float:
+        return float(self.optim.param_groups[0]["lr"])
+
+    def _adapt_actor_learning_rate(self, mean_kl: float) -> None:
+        current = self.actor_lr
+        if mean_kl > 2.0 * self.cfg.target_kl:
+            updated = current / self.cfg.kl_adaptation_factor
+        elif 0.0 < mean_kl < 0.5 * self.cfg.target_kl:
+            updated = current * self.cfg.kl_adaptation_factor
+        else:
+            updated = current
+        self.optim.param_groups[0]["lr"] = min(
+            self.cfg.actor_lr_max, max(self.cfg.actor_lr_min, updated)
+        )
+
     @torch.no_grad()
     def compute_gae(self, roll: Rollout, last_value: torch.Tensor) -> None:
         t, n = roll.reward.shape
@@ -79,10 +95,9 @@ class PPOAuxTrainer:
             for name in ("policy", "value", "entropy", "recon", "kl")
         }
         updates = 0
-        stop = False
         for _ in range(self.cfg.ppo_epochs):
-            if stop:
-                break
+            epoch_kl = torch.zeros((), device=prop.device)
+            epoch_updates = 0
             perm = torch.randperm(total, device=prop.device)
             for start in range(0, total, batch_size):
                 ix = perm[start : start + batch_size]
@@ -123,10 +138,13 @@ class PPOAuxTrainer:
                 stats["entropy"] += entropy.detach()
                 stats["recon"] += recon_loss.detach()
                 stats["kl"] += approx_kl.detach()
+                epoch_kl += approx_kl.detach()
+                epoch_updates += 1
                 updates += 1
-                if approx_kl > 1.5 * self.cfg.target_kl:
-                    stop = True
-                    break
+            self._adapt_actor_learning_rate(float(epoch_kl / max(epoch_updates, 1)))
 
         updates = max(updates, 1)
-        return {key: float(value / updates) for key, value in stats.items()}
+        result = {key: float(value / updates) for key, value in stats.items()}
+        result["actor_lr"] = self.actor_lr
+        result["updates"] = float(updates)
+        return result

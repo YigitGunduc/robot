@@ -22,9 +22,9 @@ class SonicTinyConfig:
     init_action_std: float = 0.05
     min_action_std: float = 0.001
     max_action_std: float = 0.5
-    # q, qdot, root-local displacement, relative root rotation (6D), root
-    # height, and root-local linear/angular velocity for each future frame.
-    root_reference_dim: int = 16
+    # q, qdot, and reference-vs-current-robot root rotation (6D), matching the
+    # released SONIC G1 robot encoder.
+    root_reference_dim: int = 6
     critic_privileged_dim: int = 68
 
     @property
@@ -101,7 +101,7 @@ class RewardConfig:
     joint_limit_weight: float = -10.0
     undesired_contact_weight: float = -0.1
     anti_shake_weight: float = -0.005
-    feet_acc_weight: float = -2.5e-7
+    feet_acc_weight: float = -2.5e-6
 
     anchor_pos_std: float = 0.3
     anchor_ori_std: float = 0.4
@@ -115,6 +115,8 @@ class RewardConfig:
     terminate_anchor_ori: float = 0.2
     terminate_ee_pos: float = 0.15
     terminate_foot_pos: float = 0.2
+    low_motion_root_height: float = 0.5
+    terminate_low_motion_height: float = 0.75
 
 
 @dataclass
@@ -129,6 +131,9 @@ class PPOConfig:
     entropy_coef: float = 0.013
     value_coef: float = 1.0
     actor_lr: float = 2e-5
+    actor_lr_min: float = 1e-5
+    actor_lr_max: float = 2e-4
+    kl_adaptation_factor: float = 1.5
     critic_lr: float = 1e-3
     aux_recon_coef: float = 0.01
     max_grad_norm: float = 0.1
@@ -136,8 +141,11 @@ class PPOConfig:
     seed: int = 0
     checkpoint_interval: int = 100
     eval_interval: int = 100
-    failure_sampling_alpha: float = 0.5
-    failure_sampling_cap: float = 4.0
+    failure_sampling_alpha: float = 0.9
+    failure_sampling_cap: float = 200.0
+    adaptive_sampling_bin_frames: int = 50
+    pre_failure_sample_window: int = 200
+    freeze_frame_probability: float = 0.1
 
 
 @dataclass
@@ -148,13 +156,16 @@ class SimConfig:
     decimation: int = 4
     nconmax: int = 48
     njmax: int = 288
-    # None maps [-1, 1] asymmetrically onto each joint's full legal range.
-    # A scalar preserves the legacy default_pose + scale * action mapping.
+    # With sonic_g1_control enabled, None selects SONIC's calibrated per-joint
+    # residual scales. Otherwise None retains the legacy full-joint-range mapping.
     action_scale: float | None = None
+    sonic_g1_control: bool = True
     actuator_mode: str = "auto"  # auto, position, or pd_torque
     joint_stiffness: float = 80.0
     joint_damping: float = 2.0
     joint_limit_margin: float = 0.02
+    soft_joint_limit_factor: float = 0.9
+    undesired_contact_penetration: float = 1e-4
     enable_randomization: bool = False
     reset_joint_noise: float = 0.02
     reset_velocity_noise: float = 0.05

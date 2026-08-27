@@ -5,6 +5,10 @@ from pathlib import Path
 
 import torch
 
+from mini_groot_sonic.checkpoint import (
+    BODY_CONTROL_STACK_VERSION,
+    require_current_body_control_stack,
+)
 from mini_groot_sonic.config import PPOConfig, RewardConfig, SimConfig, SonicTinyConfig
 from mini_groot_sonic.data.motion_bank import MotionBank
 from mini_groot_sonic.models.sonic_tiny import TinySonicCritic, TinySonicPolicy
@@ -71,12 +75,26 @@ def train_body_controller(
         sim_cfg.device,
         failure_sampling_alpha=ppo_cfg.failure_sampling_alpha,
         failure_sampling_cap=ppo_cfg.failure_sampling_cap,
+        adaptive_sampling_bin_frames=ppo_cfg.adaptive_sampling_bin_frames,
+        pre_failure_sample_window=ppo_cfg.pre_failure_sample_window,
+        freeze_frame_probability=ppo_cfg.freeze_frame_probability,
     )
     if bank.body_names != env.body_names:
         raise ValueError("Preprocessed body_names do not match the MJCF used for training")
+    action_scale_summary = (
+        "full_joint_range"
+        if env.action_scale is None
+        else f"{float(env.action_scale.min()):.4f}..{float(env.action_scale.max()):.4f}"
+    )
+    print(
+        f"motion_bank motions={len(bank.motion_names)} bins={len(bank.failure_ema)} "
+        f"freeze_augmented={int((bank.freeze_frames >= 0).sum())} "
+        f"action_scale={action_scale_summary}",
+        flush=True,
+    )
 
     policy = TinySonicPolicy(sonic_cfg).to(device)
-    critic = TinySonicCritic(sonic_cfg).to(device)
+    critic = TinySonicCritic(sonic_cfg, privileged_dim=env.privileged_dim).to(device)
     trainer = PPOAuxTrainer(policy, critic, sonic_cfg, ppo_cfg)
     reward_fn = SonicStyleReward(
         reward_cfg,
@@ -91,6 +109,7 @@ def train_body_controller(
     same_motion_distribution = False
     if resume_from is not None:
         checkpoint = torch.load(resume_from, map_location=device, weights_only=False)
+        require_current_body_control_stack(checkpoint)
         policy.load_state_dict(checkpoint["policy"])
         critic.load_state_dict(checkpoint["critic"])
         if "optimizer" in checkpoint:
@@ -100,13 +119,8 @@ def train_body_controller(
             best_success = float(checkpoint.get("best_success", best_success))
         restore_rng_state(checkpoint.get("rng_state"))
         same_motion_distribution = checkpoint.get("motion_names") == bank.motion_names
-        failure_ema = checkpoint.get("motion_failure_ema")
-        if (
-            failure_ema is not None
-            and same_motion_distribution
-            and failure_ema.numel() == bank.failure_ema.numel()
-        ):
-            bank.failure_ema.copy_(failure_ema.to(device))
+        if same_motion_distribution:
+            bank.load_adaptive_sampling_state(checkpoint.get("adaptive_sampling"))
 
     # Preserve the checkpoint's normalization on same-stage resumes. Refresh it
     # only when a curriculum stage changes the actual motion distribution.
@@ -137,11 +151,18 @@ def train_body_controller(
         prop_buf, ref_buf, privileged_buf, action_buf = [], [], [], []
         logp_buf, value_buf, reward_buf, done_buf, token_index_buf = [], [], [], [], []
         reward_accum = torch.zeros((), device=device)
+        reset_count = torch.zeros((), device=device)
+        tracking_failure_count = torch.zeros((), device=device)
+        action_saturation_accum = torch.zeros((), device=device)
         reward_terms: dict[str, torch.Tensor] = {}
 
         for _ in range(ppo_cfg.rollout_steps):
             prop = env.proprio_history()
-            future = bank.future_reference(state.motion_ids, state.frame_ids)
+            current_obs = env.observe()
+            current_ref = bank.current_reference(state.motion_ids, state.frame_ids)
+            future = bank.future_reference(
+                state.motion_ids, state.frame_ids, current_obs.root_quat
+            )
             if sim_cfg.enable_randomization:
                 future = future.clone()
                 future[..., : sonic_cfg.dof] += (
@@ -158,7 +179,11 @@ def train_body_controller(
                 dist = policy.distribution(out.action_mean)
                 action = dist.rsample()
                 logp = dist.log_prob(action).sum(-1)
-                privileged = env.privileged_observation()
+                privileged = env.privileged_observation(
+                    current_obs,
+                    current_ref["root_pos"],
+                    current_ref["root_quat"],
+                )
                 value = critic(prop, future, privileged)
 
             obs = env.step(action)
@@ -169,8 +194,8 @@ def train_body_controller(
                 ref_now,
                 action,
                 state.previous_action,
-                env.joint_low,
-                env.joint_high,
+                env.soft_joint_low,
+                env.soft_joint_high,
                 state.previous_joint_vel,
                 env.control_dt,
                 env.undesired_contact_count(),
@@ -190,22 +215,38 @@ def train_body_controller(
             done_buf.append(done)
             token_index_buf.append(out.token_indices)
             reward_accum += rew.total.mean()
+            action_saturation_accum += (action.abs() > 0.95).float().mean()
             for name, value in rew.terms.items():
                 mean_value = value.mean()
                 reward_terms[name] = reward_terms.get(name, torch.zeros_like(mean_value)) + mean_value
 
             reset_ids = done.nonzero(as_tuple=False).squeeze(-1)
+            reset_count += done.sum()
+            tracking_failure_count += rew.done_tracking.sum()
             if reset_ids.numel():
                 bank.update_failures(
                     state.motion_ids[reset_ids],
+                    state.frame_ids[reset_ids],
                     rew.done_tracking[reset_ids],
                 )
             _reset_envs(env, bank, state, reset_ids)
 
         with torch.no_grad():
             last_prop = env.proprio_history()
-            last_ref = bank.future_reference(state.motion_ids, state.frame_ids)
-            last_value = critic(last_prop, last_ref, env.privileged_observation())
+            last_obs = env.observe()
+            last_current_ref = bank.current_reference(state.motion_ids, state.frame_ids)
+            last_ref = bank.future_reference(
+                state.motion_ids, state.frame_ids, last_obs.root_quat
+            )
+            last_value = critic(
+                last_prop,
+                last_ref,
+                env.privileged_observation(
+                    last_obs,
+                    last_current_ref["root_pos"],
+                    last_current_ref["root_quat"],
+                ),
+            )
 
         roll = Rollout(
             prop=torch.stack(prop_buf),
@@ -227,10 +268,15 @@ def train_body_controller(
         saturation = (
             (token_indices == 0) | (token_indices == sonic_cfg.fsq_levels - 1)
         ).float().mean()
+        failure_per_reset = tracking_failure_count / reset_count.clamp_min(1.0)
+        action_saturation = action_saturation_accum / ppo_cfg.rollout_steps
         print(
             f"iter={iteration:05d} reward={float(reward_accum/ppo_cfg.rollout_steps):.3f} "
             f"policy={stats['policy']:.4f} value={stats['value']:.4f} "
             f"recon={stats['recon']:.4f} kl={stats['kl']:.5f} "
+            f"actor_lr={stats['actor_lr']:.2e} updates={int(stats['updates'])} "
+            f"failure_per_reset={float(failure_per_reset):.3f} "
+            f"action_saturation={float(action_saturation):.3f} "
             f"fsq_occupancy={float(occupancy):.3f} fsq_saturation={float(saturation):.3f}"
         )
         if iteration % 20 == 0:
@@ -249,6 +295,7 @@ def train_body_controller(
                 sim_cfg,
                 sonic_cfg,
                 policy,
+                reward_cfg=reward_cfg,
                 max_motions=8,
             )
             print("validation " + " ".join(f"{k}={v:.5f}" for k, v in sorted(eval_metrics.items())))
@@ -259,6 +306,7 @@ def train_body_controller(
                 "policy": policy.state_dict(),
                 "critic": critic.state_dict(),
                 "optimizer": trainer.optim.state_dict(),
+                "control_stack_version": BODY_CONTROL_STACK_VERSION,
                 "iteration": iteration,
                 "best_success": max(best_success, success),
                 "sonic_cfg": asdict(sonic_cfg),
@@ -266,7 +314,7 @@ def train_body_controller(
                 "reward_cfg": asdict(reward_cfg),
                 "ppo_cfg": asdict(ppo_cfg),
                 "rng_state": rng_state(),
-                "motion_failure_ema": bank.failure_ema.detach().cpu(),
+                "adaptive_sampling": bank.adaptive_sampling_state(),
                 "motion_names": bank.motion_names,
                 "validation": eval_metrics,
             }

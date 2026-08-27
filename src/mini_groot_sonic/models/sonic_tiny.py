@@ -25,7 +25,7 @@ class SparseGoalEncoder(nn.Module):
     def __init__(self, cfg: GoalConfig, token_dim: int):
         super().__init__()
         self.cfg = cfg
-        self.net = mlp(cfg.flat_dim, cfg.hidden, token_dim)
+        self.net = mlp(cfg.flat_dim, cfg.hidden, token_dim, activation=nn.SiLU)
 
     def forward(self, targets: torch.Tensor, masks: torch.Tensor) -> torch.Tensor:
         # targets: [B, S, 7], masks: [B, S]
@@ -46,14 +46,21 @@ class TinySonicPolicy(nn.Module):
     def __init__(self, cfg: SonicTinyConfig, goal_cfg: GoalConfig | None = None):
         super().__init__()
         self.cfg = cfg
-        self.reference_encoder = mlp(cfg.reference_dim, cfg.encoder_hidden, cfg.token_dim)
+        if cfg.token_dim % cfg.token_groups:
+            raise ValueError("token_dim must be divisible by token_groups")
+        self.reference_encoder = mlp(
+            cfg.reference_dim, cfg.encoder_hidden, cfg.token_dim, activation=nn.SiLU
+        )
         self.quantizer = FiniteScalarQuantizer(cfg.token_dim, cfg.fsq_levels)
         self.dynamic_decoder = mlp(
             cfg.token_dim + cfg.proprio_dim,
             cfg.controller_hidden,
             cfg.dof,
+            activation=nn.SiLU,
         )
-        self.kinematic_decoder = mlp(cfg.token_dim, cfg.recon_hidden, cfg.reference_dim)
+        self.kinematic_decoder = mlp(
+            cfg.token_dim, cfg.recon_hidden, cfg.reference_dim, activation=nn.SiLU
+        )
         self.register_buffer("reference_mean", torch.zeros(cfg.reference_dim))
         self.register_buffer("reference_std", torch.ones(cfg.reference_dim))
         self.log_std = nn.Parameter(torch.full((cfg.dof,), float(torch.log(torch.tensor(cfg.init_action_std)))))
@@ -123,12 +130,14 @@ class TinySonicPolicy(nn.Module):
 
 
 class TinySonicCritic(nn.Module):
-    def __init__(self, cfg: SonicTinyConfig):
+    def __init__(self, cfg: SonicTinyConfig, privileged_dim: int | None = None):
         super().__init__()
+        self.privileged_dim = privileged_dim or cfg.critic_privileged_dim
         self.net = mlp(
-            cfg.proprio_dim + cfg.reference_dim + cfg.critic_privileged_dim,
+            cfg.proprio_dim + cfg.reference_dim + self.privileged_dim,
             cfg.critic_hidden,
             1,
+            activation=nn.SiLU,
         )
         self.register_buffer("reference_mean", torch.zeros(cfg.reference_dim))
         self.register_buffer("reference_std", torch.ones(cfg.reference_dim))
