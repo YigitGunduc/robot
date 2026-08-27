@@ -138,9 +138,9 @@ Python 3.11 or 3.12 is recommended on the actual GPU machine.
 
 For Google Colab with BONES on Drive, use
 [`notebooks/mini_groot_sonic_colab.ipynb`](notebooks/mini_groot_sonic_colab.ipynb).
-It selects a small stand/walk/run curriculum using SONIC-style filename filtering,
-caches derived data and checkpoints on Drive, and runs a target-GPU MJWarp smoke test
-before PPO.
+It selects a SONIC-filtered candidate pool, builds a structured-metadata and kinematic
+five-stage curriculum, caches derived data and checkpoints on Drive, and dynamically
+promotes stages using held-out metrics.
 
 ```bash
 cd mini_groot_sonic
@@ -196,6 +196,9 @@ SONIC's offline filtering design. Multi-phase motions are emitted as separately
 captioned subclips by default unless `--no-temporal-segments` is used.
 
 BONES-SEED is gated/licensed; this project assumes you already have authorized access and a local copy.
+
+Training data includes [Motion Data by Bones Studio](https://bones.studio/). Use of the
+underlying dataset is subject to the BONES Motion Capture Dataset License Agreement.
 
 References:
 
@@ -268,7 +271,52 @@ The precomputed body tracks are important: the GPU PPO loop should not repeatedl
 
 ---
 
-## 2. Train the SONIC-like body controller
+## 2. Build and train the dynamic curriculum
+
+Create cumulative balance, neutral-walk, walk-variation, turn, and jog/run stages:
+
+```bash
+mgsp-build-curriculum \
+  --motions data/bones_preprocessed \
+  --out data/bones_curriculum \
+  --stage-sizes 8,20,32,48,64 \
+  --seed 0
+```
+
+This writes `curriculum.json`, one filename list per stage, and an `audit.csv` containing
+the admission/rejection reason, physical-quality result, measured kinematic features,
+difficulty score, and first stage for every candidate. The hard gates reject mirrored
+duplicates, props, complex actions, non-locomotion packages, body positions below the
+floor, implausible body/joint velocities, and extended airborne motion. Difficulty is a
+percentile score over root speed, yaw rate, joint speed, pelvis-height range, and
+upper-body speed.
+
+Train with validation-gated promotion:
+
+```bash
+mgsp-train-curriculum \
+  --manifest data/bones_curriculum/curriculum.json \
+  --motions data/bones_preprocessed \
+  --config configs/default.yaml \
+  --mjcf /path/to/g1_29dof.xml \
+  --device cuda:0 \
+  --num-envs 64 \
+  --out runs/body_curriculum \
+  --evaluation-chunk-iterations 100 \
+  --minimum-stage-iterations 300 \
+  --maximum-stage-iterations 3000 \
+  --promotion-patience 2
+```
+
+Stages remain cumulative, and actor/source validation groups remain permanently held out
+as the curriculum expands. The default gate requires success rate `>= 0.80`, MPJPE
+`<= 0.08 m`, root-position error `<= 0.08 m`, and root-orientation error `<= 0.20 rad`
+on two consecutive evaluations. Training stops before the next stage if the current one
+uses its full budget without passing. Progress and every gate decision are saved in
+`curriculum_state.json`; rerunning the command resumes safely. Randomization is disabled
+for balance and walking, then enabled from the turning stage by default.
+
+## 3. Train the SONIC-like body controller manually
 
 ```bash
 mgsp-train-body \
@@ -338,7 +386,7 @@ Only build the sharded loader after the controller is behaving correctly.
 
 ---
 
-# 3. Collect synthetic replay data
+# 4. Collect synthetic replay data
 
 After body training, replay BONES motions through the learned token controller. Replay
 rows store the pre-action state beside the token generated from that state, preserving
@@ -395,7 +443,7 @@ mgsp-collect-replay ... --mode policy --randomized --out replays/recovery
 
 ---
 
-# 4. Optional RGB collection
+# 5. Optional RGB collection
 
 For small debugging datasets:
 
@@ -444,7 +492,7 @@ Add vision only when the correct motion actually depends on what the robot sees.
 
 ---
 
-# 5. Train the GR00T-style flow model
+# 6. Train the GR00T-style flow model
 
 Text-only first:
 
@@ -540,7 +588,7 @@ That is the right phase for precise arbitrary reaching.
 
 ---
 
-# 6. Run natural language through both models
+# 7. Run natural language through both models
 
 After both checkpoints exist:
 
@@ -642,12 +690,12 @@ That is intentional.
 Do this before scaling anything:
 
 ```text
-1. Preprocess 64 locomotion/gesture BONES clips.
-2. Train with 64-128 MJWarp environments.
-3. Evaluate the controller on actor/source-disjoint held-out clips.
-4. Collect 100 replay episodes.
-5. Train text-only flow model.
-6. Test 20 paraphrased commands.
+1. Preprocess a 256-motion filename-filtered candidate pool.
+2. Audit it into cumulative stages of 8, 20, 32, 48, and 64 motions.
+3. Dynamically train with 64 MJWarp environments until each validation gate passes.
+4. Inspect the numerical evaluation and MP4 at every blocked or completed stage.
+5. Collect 100 replay episodes only after locomotion tracking is stable.
+6. Train the text-only flow model and test paraphrased commands.
 ```
 
 Only after those six steps work should you spend GPU budget on thousands of motions or visual data.

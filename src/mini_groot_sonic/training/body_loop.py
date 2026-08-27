@@ -65,7 +65,13 @@ def train_body_controller(
     seed_everything(ppo_cfg.seed)
     device = torch.device(sim_cfg.device)
     env = MJWarpG1VecEnv(sim_cfg, sonic_cfg, ppo_cfg.num_envs)
-    bank = MotionBank(preprocessed_paths, sonic_cfg, sim_cfg.device)
+    bank = MotionBank(
+        preprocessed_paths,
+        sonic_cfg,
+        sim_cfg.device,
+        failure_sampling_alpha=ppo_cfg.failure_sampling_alpha,
+        failure_sampling_cap=ppo_cfg.failure_sampling_cap,
+    )
     if bank.body_names != env.body_names:
         raise ValueError("Preprocessed body_names do not match the MJCF used for training")
 
@@ -81,6 +87,8 @@ def train_body_controller(
 
     start_iteration = 0
     best_success = -1.0
+    checkpoint: dict | None = None
+    same_motion_distribution = False
     if resume_from is not None:
         checkpoint = torch.load(resume_from, map_location=device, weights_only=False)
         policy.load_state_dict(checkpoint["policy"])
@@ -91,12 +99,21 @@ def train_body_controller(
         if not reset_best_on_resume:
             best_success = float(checkpoint.get("best_success", best_success))
         restore_rng_state(checkpoint.get("rng_state"))
+        same_motion_distribution = checkpoint.get("motion_names") == bank.motion_names
+        failure_ema = checkpoint.get("motion_failure_ema")
+        if (
+            failure_ema is not None
+            and same_motion_distribution
+            and failure_ema.numel() == bank.failure_ema.numel()
+        ):
+            bank.failure_ema.copy_(failure_ema.to(device))
 
-    # Refresh normalization after loading so a curriculum stage can expand or
-    # change the motion distribution without retaining stale reference stats.
-    reference_mean, reference_std = bank.reference_stats()
-    policy.set_reference_stats(reference_mean, reference_std)
-    critic.set_reference_stats(reference_mean, reference_std)
+    # Preserve the checkpoint's normalization on same-stage resumes. Refresh it
+    # only when a curriculum stage changes the actual motion distribution.
+    if not same_motion_distribution:
+        reference_mean, reference_std = bank.reference_stats()
+        policy.set_reference_stats(reference_mean, reference_std)
+        critic.set_reference_stats(reference_mean, reference_std)
 
     state = BodyTrainState(
         motion_ids=torch.zeros(ppo_cfg.num_envs, dtype=torch.long, device=device),
@@ -182,8 +199,6 @@ def train_body_controller(
                 bank.update_failures(
                     state.motion_ids[reset_ids],
                     rew.done_tracking[reset_ids],
-                    ppo_cfg.failure_sampling_alpha,
-                    ppo_cfg.failure_sampling_cap,
                 )
             _reset_envs(env, bank, state, reset_ids)
 
@@ -251,6 +266,8 @@ def train_body_controller(
                 "reward_cfg": asdict(reward_cfg),
                 "ppo_cfg": asdict(ppo_cfg),
                 "rng_state": rng_state(),
+                "motion_failure_ema": bank.failure_ema.detach().cpu(),
+                "motion_names": bank.motion_names,
                 "validation": eval_metrics,
             }
             torch.save(checkpoint, checkpoint_dir / f"body_{iteration:06d}.pt")

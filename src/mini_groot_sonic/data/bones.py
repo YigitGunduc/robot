@@ -20,6 +20,28 @@ DESCRIPTION_COLUMNS = (
     "content_short_description_2",
 )
 
+CURRICULUM_METADATA_COLUMNS = (
+    "move_name",
+    "filename",
+    "move_duration_frames",
+    "package",
+    "category",
+    "is_neutral",
+    "is_mirror",
+    "take_name",
+    "take_actor",
+    "actor_uid",
+    "content_name",
+    "content_type_of_movement",
+    "content_body_position",
+    "content_uniform_style",
+    "content_horizontal_move",
+    "content_vertical_move",
+    "content_props",
+    "content_complex_action",
+    "content_repeated_action",
+)
+
 # Keep this list in sync with SONIC's offline BONES filter. SONIC applies the
 # denylist to motion filenames/paths before preprocessing; it does not use
 # natural-language metadata to decide whether a motion is admitted.
@@ -222,7 +244,7 @@ class BonesSeedIndex:
             return {}
         row = self.meta.loc[row_idx]
         out = {}
-        for key in ("actor_uid", "take_actor", "content_name", "package", "category"):
+        for key in CURRICULUM_METADATA_COLUMNS:
             if key in self.meta.columns and pd.notna(row[key]):
                 out[key] = str(row[key])
         return out

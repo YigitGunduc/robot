@@ -30,11 +30,15 @@ class MotionBank:
         sonic_cfg: SonicTinyConfig,
         device: str,
         max_memory_gb: float = 8.0,
+        failure_sampling_alpha: float = 0.5,
+        failure_sampling_cap: float = 4.0,
     ):
         if not paths:
             raise ValueError("MotionBank requires at least one preprocessed clip")
         self.cfg = sonic_cfg
         self.device = torch.device(device)
+        self.failure_sampling_alpha = min(1.0, max(0.0, failure_sampling_alpha))
+        self.failure_sampling_cap = max(1.0, failure_sampling_cap)
         clips = [np.load(p, allow_pickle=True) for p in paths]
         self.lengths = torch.tensor([len(c["joint_pos"]) for c in clips], device=self.device, dtype=torch.long)
         self.captions = [str(c["caption"].item()) for c in clips]
@@ -91,7 +95,7 @@ class MotionBank:
             clip.close()
 
     def sample_start(self, batch: int) -> MotionBankBatch:
-        weights = self.base_sampling_weights * (1.0 + self.failure_ema)
+        weights = self.sampling_weights()
         motion_ids = torch.multinomial(weights, batch, replacement=True)
         max_offset = (self.cfg.future_frames - 1) * self.cfg.future_stride + 2
         max_start = (self.lengths[motion_ids] - max_offset).clamp_min(1)
@@ -99,12 +103,31 @@ class MotionBank:
         return MotionBankBatch(motion_ids, frame_ids)
 
     @torch.no_grad()
+    def sampling_weights(self) -> torch.Tensor:
+        """Blend uniform-frame coverage with capped failure-targeted sampling."""
+
+        uniform = self.base_sampling_weights / self.base_sampling_weights.sum()
+        if self.failure_sampling_alpha <= 0.0:
+            return uniform
+        mean_failure = self.failure_ema.mean()
+        capped_failure = self.failure_ema.clamp_max(
+            self.failure_sampling_cap * mean_failure
+        )
+        targeted = self.base_sampling_weights * capped_failure
+        targeted_sum = targeted.sum()
+        targeted = targeted / targeted_sum.clamp_min(torch.finfo(targeted.dtype).eps)
+        has_target = (targeted_sum > 0).to(targeted.dtype)
+        targeted = has_target * targeted + (1.0 - has_target) * uniform
+        return (
+            (1.0 - self.failure_sampling_alpha) * uniform
+            + self.failure_sampling_alpha * targeted
+        )
+
+    @torch.no_grad()
     def update_failures(
         self,
         motion_ids: torch.Tensor,
         failed: torch.Tensor,
-        alpha: float = 0.5,
-        cap: float = 4.0,
     ) -> None:
         unique_ids, inverse = motion_ids.unique(return_inverse=True)
         totals = torch.zeros(len(unique_ids), device=self.device)
@@ -113,9 +136,9 @@ class MotionBank:
         counts.scatter_add_(0, inverse, torch.ones_like(failed, dtype=torch.float32))
         rates = totals / counts.clamp_min(1.0)
         self.failure_ema[unique_ids] = (
-            0.95 * self.failure_ema[unique_ids] + 0.05 * alpha * rates
+            0.95 * self.failure_ema[unique_ids] + 0.05 * rates
         )
-        self.failure_ema.clamp_(0.0, max(0.0, cap - 1.0))
+        self.failure_ema.clamp_(0.0, 1.0)
 
     def future_reference(self, motion_ids: torch.Tensor, frame_ids: torch.Tensor) -> torch.Tensor:
         offsets = torch.arange(self.cfg.future_frames, device=self.device) * self.cfg.future_stride

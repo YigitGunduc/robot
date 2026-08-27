@@ -41,7 +41,14 @@ def test_bones_index_filters_before_seeded_limit(tmp_path: Path):
     metadata_root.mkdir()
     rows = [
         {"motion_id": "metadata_only", "content_short_description": "walk forward"},
-        {"motion_id": "easy_walk", "content_short_description": "pick up a box"},
+        {
+            "motion_id": "easy_walk",
+            "content_short_description": "pick up a box",
+            "package": "Locomotion",
+            "content_props": "0",
+            "content_type_of_movement": "walking",
+            "is_mirror": False,
+        },
         {"motion_id": "easy_stand", "content_short_description": "hold a heavy object"},
         {"motion_id": "hard_flip", "content_short_description": "stand idle"},
     ]
@@ -59,6 +66,10 @@ def test_bones_index_filters_before_seeded_limit(tmp_path: Path):
         )
     )
     assert {stem for stem, _, _ in records} == {"easy_walk", "easy_stand"}
+    metadata = index.metadata_for("easy_walk")
+    assert metadata["package"] == "Locomotion"
+    assert metadata["content_type_of_movement"] == "walking"
+    assert metadata["is_mirror"] == "False"
 
 
 def test_sonic_filename_filter_matches_paths_not_metadata():

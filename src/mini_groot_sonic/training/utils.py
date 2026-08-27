@@ -60,13 +60,7 @@ def split_motion_paths(
     """Prefer actor-disjoint splits, then source-motion-disjoint splits."""
     groups: dict[str, list[Path]] = defaultdict(list)
     for path in paths:
-        with np.load(path, allow_pickle=True) as data:
-            if "actor_uid" in data.files:
-                key = f"actor:{data['actor_uid'].item()}"
-            elif "source_motion_id" in data.files:
-                key = f"source:{data['source_motion_id'].item()}"
-            else:
-                key = f"clip:{path.stem}"
+        key = motion_group_key(path)
         groups[key].append(path)
     keys = sorted(groups)
     random.Random(seed).shuffle(keys)
@@ -80,3 +74,61 @@ def split_motion_paths(
     training = [path for key, members in groups.items() if key not in validation_keys for path in members]
     validation = [path for key, members in groups.items() if key in validation_keys for path in members]
     return training, validation
+
+
+def motion_group_key(path: str | Path) -> str:
+    path = Path(path)
+    with np.load(path, allow_pickle=True) as data:
+        if "actor_uid" in data.files:
+            actor = str(data["actor_uid"].item()).strip()
+            if actor and actor.lower() not in {"nan", "none", "null"}:
+                return f"actor:{actor}"
+        if "source_motion_id" in data.files:
+            source = str(data["source_motion_id"].item()).strip()
+            if source and source.lower() not in {"nan", "none", "null"}:
+                return f"source:{source}"
+    return f"clip:{path.stem}"
+
+
+def split_curriculum_motion_paths(
+    stage_paths: list[list[Path]],
+    validation_fraction: float,
+    seed: int,
+) -> list[tuple[list[Path], list[Path]]]:
+    """Create one reserved validation-group set that remains stable across stages."""
+
+    if not stage_paths or not stage_paths[-1]:
+        raise ValueError("Curriculum requires at least one non-empty stage")
+    key_by_path = {
+        path: motion_group_key(path)
+        for paths in stage_paths
+        for path in paths
+    }
+    final_keys = sorted({key_by_path[path] for path in stage_paths[-1]})
+    if len(final_keys) < 2:
+        raise ValueError("Curriculum requires at least two actor/source groups")
+    rng = random.Random(seed)
+    rng.shuffle(final_keys)
+    n_validation = min(
+        len(final_keys) - 1,
+        max(1, round(len(final_keys) * validation_fraction)),
+    )
+    validation_keys = set(final_keys[:n_validation])
+    for stage_index, paths in enumerate(stage_paths):
+        stage_keys = {key_by_path[path] for path in paths}
+        if not (stage_keys & validation_keys):
+            candidates = sorted(stage_keys - validation_keys)
+            random.Random(seed + stage_index + 1).shuffle(candidates)
+            if len(stage_keys) > 1 and candidates:
+                validation_keys.add(candidates[0])
+
+    splits = []
+    for paths in stage_paths:
+        training = [path for path in paths if key_by_path[path] not in validation_keys]
+        validation = [path for path in paths if key_by_path[path] in validation_keys]
+        if not training or not validation:
+            raise ValueError(
+                "Every curriculum stage needs at least one disjoint training and validation group"
+            )
+        splits.append((training, validation))
+    return splits
