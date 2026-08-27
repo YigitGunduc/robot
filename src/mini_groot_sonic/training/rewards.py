@@ -120,8 +120,17 @@ class SonicStyleReward:
         rel_ori_err = quat_distance_angle(obs.body_quat, ref_body_quat)
         rel_ori_err_sq = rel_ori_err.square().mean(-1)
 
-        linvel_err_sq = (obs.body_linvel - ref["body_linvel"]).square().sum(-1).mean(-1)
-        angvel_err_sq = (obs.body_angvel - ref["body_angvel"]).square().sum(-1).mean(-1)
+        # Re-anchor reference velocities into the heading-aligned frame, matching
+        # the position/orientation re-anchoring above.  Without this, any heading
+        # drift causes the global-frame velocity vectors to diverge from the
+        # reference, creating irrecoverable penalties in the velocity rewards.
+        delta_heading = heading_quat(quat_mul(obs.root_quat, quat_conjugate(ref["root_quat"])))
+        dh_expand = delta_heading[:, None].expand_as(obs.body_quat)
+        ref_body_linvel = quat_rotate(dh_expand, ref["body_linvel"])
+        ref_body_angvel = quat_rotate(dh_expand, ref["body_angvel"])
+
+        linvel_err_sq = (obs.body_linvel - ref_body_linvel).square().sum(-1).mean(-1)
+        angvel_err_sq = (obs.body_angvel - ref_body_angvel).square().sum(-1).mean(-1)
 
         # 5-point local positions (head, wrists, ankles), root-frame coordinates.
         offsets = self.keypoint_offsets.to(dev, dtype=obs.body_pos.dtype)

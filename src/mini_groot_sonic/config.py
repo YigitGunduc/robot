@@ -101,7 +101,7 @@ class RewardConfig:
     joint_limit_weight: float = -10.0
     undesired_contact_weight: float = -0.1
     anti_shake_weight: float = -0.005
-    feet_acc_weight: float = -2.5e-6
+    feet_acc_weight: float = -2.5e-7
 
     anchor_pos_std: float = 0.3
     anchor_ori_std: float = 0.4
@@ -136,7 +136,7 @@ class PPOConfig:
     kl_adaptation_factor: float = 1.5
     critic_lr: float = 1e-3
     aux_recon_coef: float = 0.01
-    max_grad_norm: float = 0.1
+    max_grad_norm: float = 1.0
     target_kl: float = 0.01
     seed: int = 0
     checkpoint_interval: int = 100
