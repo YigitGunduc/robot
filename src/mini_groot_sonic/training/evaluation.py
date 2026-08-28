@@ -71,6 +71,25 @@ def evaluate_body_controller(
         "mean_abs_actuator_force",
     )}
     samples = torch.zeros((), device=device)
+    active_steps = torch.zeros(len(selected), device=device)
+    termination_maxima = {
+        name: torch.zeros((), device=device)
+        for name in (
+            "anchor_height_error",
+            "anchor_orientation_error",
+            "end_effector_height_error",
+            "foot_position_error",
+        )
+    }
+    termination_counts = {
+        name: torch.zeros((), device=device)
+        for name in (
+            "anchor_height_failure",
+            "anchor_orientation_failure",
+            "end_effector_height_failure",
+            "foot_position_failure",
+        )
+    }
     max_steps = int(bank.lengths.max().item())
     was_training = policy.training
     policy.eval()
@@ -112,6 +131,17 @@ def evaluate_body_controller(
             env.control_dt,
             contacts,
         )
+        active_steps += active.float()
+        for name, current_maximum in termination_maxima.items():
+            active_values = reward.termination[name][active]
+            if active_values.numel():
+                termination_maxima[name] = torch.maximum(
+                    current_maximum, active_values.max()
+                )
+        for name, current_count in termination_counts.items():
+            termination_counts[name] = current_count + (
+                active & reward.termination[name]
+            ).float().sum()
         for name, value in (
             ("root_position_error", root_error),
             ("root_xy_error", root_xy_error),
@@ -135,4 +165,13 @@ def evaluate_body_controller(
     metrics = {name: float(value / denom) for name, value in sums.items()}
     metrics["success_rate"] = float((~failed).float().mean())
     metrics["evaluated_motions"] = float(len(selected))
+    future_span = (sonic_cfg.future_frames - 1) * sonic_cfg.future_stride + 1
+    available_steps = (bank.lengths[motion_ids] - future_span).clamp_min(1).float()
+    survival_fraction = (active_steps / available_steps).clamp_max(1.0)
+    metrics["mean_survival_fraction"] = float(survival_fraction.mean())
+    metrics["minimum_survival_fraction"] = float(survival_fraction.min())
+    for name, value in termination_maxima.items():
+        metrics[f"max_{name}"] = float(value)
+    for name, value in termination_counts.items():
+        metrics[f"{name}_rate"] = float(value / len(selected))
     return metrics

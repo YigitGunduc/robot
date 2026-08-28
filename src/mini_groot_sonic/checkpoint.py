@@ -7,7 +7,7 @@ import torch
 
 from mini_groot_sonic.config import SimConfig
 
-BODY_CONTROL_STACK_VERSION = 3
+BODY_CONTROL_STACK_VERSION = 4
 
 _CONTROL_CONFIG_FIELDS = (
     "physics_dt",
@@ -52,7 +52,7 @@ def require_current_body_control_stack(checkpoint: dict) -> None:
         raise RuntimeError(
             f"Checkpoint control stack v{version} is incompatible with "
             f"v{BODY_CONTROL_STACK_VERSION}. Start a new body run: action scaling, "
-            "Gaussian action semantics, proprioception, and simulator ownership changed."
+            "reference encoding, PPO clipping, or simulator ownership changed."
         )
 
 

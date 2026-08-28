@@ -53,6 +53,7 @@ class RewardOutput:
     total: torch.Tensor
     terms: dict[str, torch.Tensor]
     done_tracking: torch.Tensor
+    termination: dict[str, torch.Tensor]
 
 
 class SonicStyleReward:
@@ -203,17 +204,27 @@ class SonicStyleReward:
         if len(self.foot_indices):
             foot_body_ids = kidx[self.foot_indices.to(dev)]
             foot_err = (obs.body_pos[:, foot_body_ids] - ref_body_pos[:, foot_body_ids]).norm(dim=-1).max(-1).values
-        done = (
-            (anchor_height_err > height_threshold)
-            | (anchor_ori_err > cfg.terminate_anchor_ori)
-            | (
-                ee_height_err
-                > torch.where(
-                    low_motion,
-                    torch.full_like(height_threshold, cfg.terminate_low_motion_height),
-                    torch.full_like(height_threshold, cfg.terminate_ee_pos),
-                )
-            )
-            | (foot_err > cfg.terminate_foot_pos)
+        ee_height_threshold = torch.where(
+            low_motion,
+            torch.full_like(height_threshold, cfg.terminate_low_motion_height),
+            torch.full_like(height_threshold, cfg.terminate_ee_pos),
         )
-        return RewardOutput(total, terms, done)
+        termination = {
+            "anchor_height_error": anchor_height_err,
+            "anchor_orientation_error": anchor_ori_err,
+            "end_effector_height_error": ee_height_err,
+            "foot_position_error": foot_err,
+            "anchor_height_failure": anchor_height_err > height_threshold,
+            "anchor_orientation_failure": anchor_ori_err > cfg.terminate_anchor_ori,
+            "end_effector_height_failure": ee_height_err > ee_height_threshold,
+            "foot_position_failure": foot_err > cfg.terminate_foot_pos,
+        }
+        done = torch.stack(
+            [
+                termination["anchor_height_failure"],
+                termination["anchor_orientation_failure"],
+                termination["end_effector_height_failure"],
+                termination["foot_position_failure"],
+            ]
+        ).any(0)
+        return RewardOutput(total, terms, done, termination)

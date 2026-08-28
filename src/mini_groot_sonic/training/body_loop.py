@@ -125,13 +125,6 @@ def train_body_controller(
         if same_motion_distribution:
             bank.load_adaptive_sampling_state(checkpoint.get("adaptive_sampling"))
 
-    # Preserve the checkpoint's normalization on same-stage resumes. Refresh it
-    # only when a curriculum stage changes the actual motion distribution.
-    if not same_motion_distribution:
-        reference_mean, reference_std = bank.reference_stats()
-        policy.set_reference_stats(reference_mean, reference_std)
-        critic.set_reference_stats(reference_mean, reference_std)
-
     state = BodyTrainState(
         motion_ids=torch.zeros(ppo_cfg.num_envs, dtype=torch.long, device=device),
         frame_ids=torch.zeros(ppo_cfg.num_envs, dtype=torch.long, device=device),

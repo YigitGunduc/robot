@@ -62,15 +62,12 @@ class TinySonicPolicy(nn.Module):
         self.kinematic_decoder = mlp(
             cfg.token_dim, cfg.recon_hidden, cfg.reference_dim, activation=nn.SiLU
         )
-        self.register_buffer("reference_mean", torch.zeros(cfg.reference_dim))
-        self.register_buffer("reference_std", torch.ones(cfg.reference_dim))
         self.log_std = nn.Parameter(torch.full((cfg.dof,), float(torch.log(torch.tensor(cfg.init_action_std)))))
         self.goal_encoder = SparseGoalEncoder(goal_cfg, cfg.token_dim) if goal_cfg is not None else None
 
     def encode_reference(self, future_reference: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # [B, F, reference_frame_dim] or [B, reference_dim]
         x = flatten_reference_features(future_reference, self.cfg.dof)
-        x = (x - self.reference_mean) / self.reference_std.clamp_min(1e-4)
         latent = self.reference_encoder(x)
         token, indices = self.quantizer(latent)
         return token, indices, latent
@@ -83,17 +80,6 @@ class TinySonicPolicy(nn.Module):
 
     def project_external_token(self, token: torch.Tensor) -> torch.Tensor:
         return self.quantizer.project(token)
-
-    @torch.no_grad()
-    def set_reference_stats(self, mean: torch.Tensor, std: torch.Tensor) -> None:
-        if mean.shape != self.reference_mean.shape or std.shape != self.reference_std.shape:
-            raise ValueError("reference normalization statistics have the wrong shape")
-        self.reference_mean.copy_(mean)
-        self.reference_std.copy_(std.clamp_min(1e-4))
-
-    def normalize_reference(self, future_reference: torch.Tensor) -> torch.Tensor:
-        flat = flatten_reference_features(future_reference, self.cfg.dof)
-        return (flat - self.reference_mean) / self.reference_std.clamp_min(1e-4)
 
     def forward(
         self,
@@ -139,15 +125,6 @@ class TinySonicCritic(nn.Module):
             1,
             activation=nn.SiLU,
         )
-        self.register_buffer("reference_mean", torch.zeros(cfg.reference_dim))
-        self.register_buffer("reference_std", torch.ones(cfg.reference_dim))
-
-    @torch.no_grad()
-    def set_reference_stats(self, mean: torch.Tensor, std: torch.Tensor) -> None:
-        if mean.shape != self.reference_mean.shape or std.shape != self.reference_std.shape:
-            raise ValueError("reference normalization statistics have the wrong shape")
-        self.reference_mean.copy_(mean)
-        self.reference_std.copy_(std.clamp_min(1e-4))
 
     def forward(
         self,
@@ -155,8 +132,5 @@ class TinySonicCritic(nn.Module):
         future_reference: torch.Tensor,
         privileged: torch.Tensor,
     ) -> torch.Tensor:
-        reference = (
-            flatten_reference_features(future_reference, self.cfg.dof)
-            - self.reference_mean
-        ) / self.reference_std.clamp_min(1e-4)
+        reference = flatten_reference_features(future_reference, self.cfg.dof)
         return self.net(torch.cat([proprio_history, reference, privileged], dim=-1)).squeeze(-1)

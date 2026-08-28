@@ -114,3 +114,5 @@ def test_anchor_height_still_terminates_a_fall():
         torch.full((29,), -2.0), torch.full((29,), 2.0), None, 0.02,
     )
     assert out.done_tracking.item()
+    assert out.termination["anchor_height_failure"].item()
+    assert not out.termination["anchor_orientation_failure"].item()

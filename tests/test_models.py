@@ -1,6 +1,7 @@
 import torch
 
 from mini_groot_sonic.config import FlowConfig, GoalConfig, SonicTinyConfig
+from mini_groot_sonic.data.reference import flatten_reference_features
 from mini_groot_sonic.models.flow_policy import TinyFlowMotionPolicy
 from mini_groot_sonic.models.sonic_tiny import TinySonicCritic, TinySonicPolicy
 
@@ -84,14 +85,23 @@ def test_sonic_policy_uses_unsquashed_gaussian_actions():
     assert torch.isfinite(dist.log_prob(action)).all()
 
 
-def test_sonic_critic_applies_reference_normalization():
+def test_sonic_reference_encoder_consumes_raw_tokenizer_features():
+    cfg = SonicTinyConfig(encoder_hidden=(16,), controller_hidden=(16,), recon_hidden=(16,))
+    policy = TinySonicPolicy(cfg)
+    future = torch.randn(3, cfg.future_frames, cfg.reference_frame_dim)
+    captured = []
+    hook = policy.reference_encoder[0].register_forward_pre_hook(
+        lambda _module, inputs: captured.append(inputs[0].detach().clone())
+    )
+    policy.encode_reference(future)
+    hook.remove()
+    torch.testing.assert_close(captured[0], flatten_reference_features(future, cfg.dof))
+
+
+def test_sonic_critic_consumes_raw_reference():
     cfg = SonicTinyConfig(critic_hidden=(16,))
     privileged_dim = 7
     critic = TinySonicCritic(cfg, privileged_dim=privileged_dim)
-    critic.set_reference_stats(
-        torch.randn(cfg.reference_dim),
-        torch.rand(cfg.reference_dim),
-    )
 
     batch_size = 3
     values = critic(

@@ -6,6 +6,7 @@ import torch
 from torch import nn
 
 from mini_groot_sonic.config import PPOConfig, SonicTinyConfig
+from mini_groot_sonic.data.reference import flatten_reference_features
 from mini_groot_sonic.models.sonic_tiny import TinySonicCritic, TinySonicPolicy
 
 
@@ -117,7 +118,10 @@ class PPOAuxTrainer:
                 v2 = (value_clipped - ret[ix]).square()
                 value_loss = 0.5 * torch.maximum(v1, v2).mean()
 
-                recon_target = self.policy.normalize_reference(ref[ix])
+                # Released SONIC reconstructs the raw tokenizer observations.
+                # Offline motion-only normalization is invalid for the root
+                # orientation term because it is relative to the live robot.
+                recon_target = flatten_reference_features(ref[ix], self.sonic_cfg.dof)
                 recon_loss = torch.nn.functional.mse_loss(out.reconstruction, recon_target)
                 loss = (
                     policy_loss

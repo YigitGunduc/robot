@@ -137,9 +137,9 @@ References:
 
 Python 3.11 or 3.12 is recommended on the actual GPU machine.
 
-For a fresh Google Colab run with BONES on Drive, use the SONIC-aligned v3
+For a fresh Google Colab run with BONES on Drive, use the SONIC-aligned v4
 notebook: [`notebooks/mini_groot_sonic_sonic_stack_v2_colab.ipynb`](notebooks/mini_groot_sonic_sonic_stack_v2_colab.ipynb).
-The filename is retained for existing links; its contents and run directories are v3.
+The filename is retained for existing links; its contents and run directories are v4.
 The earlier [`notebooks/mini_groot_sonic_colab.ipynb`](notebooks/mini_groot_sonic_colab.ipynb)
 is retained for comparison.
 It selects a SONIC-filtered candidate pool, builds a structured-metadata and kinematic
@@ -644,7 +644,7 @@ and joint-command discontinuity while still reconditioning on the newest robot s
 
 ## Control-stack compatibility
 
-These SONIC action and observation corrections define body control stack v3. Older body
+These SONIC action, raw-tokenizer, and optimizer corrections define body control stack v4. Older body
 checkpoints, replay datasets, and flow checkpoints are intentionally rejected. Retrain the
 body controller, recollect policy replay, and then retrain flow in that order. Body
 checkpoints own the trained simulator/control configuration; deployment only overrides the

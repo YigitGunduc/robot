@@ -137,7 +137,7 @@ class PPOConfig:
     kl_adaptation_factor: float = 1.5
     critic_lr: float = 1e-3
     aux_recon_coef: float = 0.01
-    max_grad_norm: float = 0.1
+    max_grad_norm: float = 1.0
     target_kl: float = 0.01
     seed: int = 0
     checkpoint_interval: int = 100
