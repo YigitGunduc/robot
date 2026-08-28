@@ -71,7 +71,9 @@ SONIC_FOOT_BODY_NAMES = ["left_ankle_roll_link", "right_ankle_roll_link"]
 SONIC_ANTI_SHAKE_BODY_NAMES = [
     "left_wrist_yaw_link",
     "right_wrist_yaw_link",
-    "head_link",
+    # NVIDIA's 29-DOF BONES MJCF attaches the fixed head geometry to torso_link and does not
+    # expose a separate head body. Its local-head reward uses torso_link for the same reason.
+    "torso_link",
 ]
 SONIC_EE_TERMINATION_BODY_NAMES = [
     "left_ankle_roll_link",

@@ -17,7 +17,6 @@ def _minimal_g1_xml(*, semantic_bodies: bool = False) -> str:
     bodies = []
     motors = []
     child_names = [name for name in SONIC_TRACKED_BODY_NAMES if name != "pelvis"]
-    child_names.append("head_link")
     child_names.extend(f"body_{index}" for index in range(29 - len(child_names)))
     for index, name in enumerate(G1_MUJOCO_JOINT_NAMES):
         body_name = child_names[index] if semantic_bodies else f"body_{index}"
