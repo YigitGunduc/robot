@@ -61,7 +61,7 @@ def test_real_mjwarp_backend_api_and_torque_mapping(tmp_path: Path):
     command = torch.arange(29, dtype=torch.float32).repeat(2, 1)
     sim.write_torque(command)
     actuator_ids = sim.index.actuator.to(sim.ctrl.device)
-    torch.testing.assert_close(sim.ctrl[:, actuator_ids], command)
+    torch.testing.assert_close(sim.ctrl[:, actuator_ids], command.to(sim.ctrl))
     sim.configure_startup_domain_randomization(
         mass_body_names=["body_0"], num_variants=2, seed=3
     )

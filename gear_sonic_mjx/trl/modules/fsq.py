@@ -25,10 +25,13 @@ class ScalarFSQFallback(nn.Module):
 class FSQ(nn.Module):
     """SONIC-shaped FSQ wrapper.
 
-    When `vector-quantize-pytorch` is installed this calls the same public FSQ package used by
-    NVIDIA, applying a `[levels] * token_dim` scalar grid independently to each token. Without the
-    optional dependency, a parameter-free STE fallback preserves the same tensor contract.
+    ``vector-quantize-pytorch`` enumerates its implicit codebook during construction. That is useful
+    for small FSQ grids but impossible for SONIC's 32-level, 32-D tokens (``32**32`` entries). The
+    parameter-free scalar implementation is therefore the normal SONIC path. The upstream package
+    is used only when its complete codebook is small enough to enumerate safely.
     """
+
+    MAX_ENUMERATED_CODEBOOK_SIZE = 65_536
 
     def __init__(
         self,
@@ -45,7 +48,8 @@ class FSQ(nn.Module):
         if self.num_tokens * self.token_dim != self.dim:
             raise ValueError("num_tokens * token_dim must equal dim")
         self.upstream = None
-        if prefer_upstream:
+        codebook_size = self.levels**self.token_dim
+        if prefer_upstream and codebook_size <= self.MAX_ENUMERATED_CODEBOOK_SIZE:
             try:
                 from vector_quantize_pytorch import FSQ as UpstreamFSQ
 
