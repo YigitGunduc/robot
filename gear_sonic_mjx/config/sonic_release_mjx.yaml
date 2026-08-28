@@ -1,0 +1,114 @@
+# NVIDIA SONIC-release-compatible semantics, adapted to MuJoCo-Warp.
+seed: 0
+num_envs: 4096
+sim:
+  backend: mjwarp
+  sim_dt: 0.005
+  decimation: 4
+  episode_length_s: 10.0
+  nconmax: null
+  njmax: null
+motion:
+  source_fps: 120
+  preprocess_fps: 30
+  target_fps: 50
+  num_future_frames: 10
+  dt_future_ref_frames: 0.1
+  actor_prop_history_length: 10
+  actor_actions_history_length: 10
+  freeze_frame_aug: true
+  freeze_frame_aug_prob: 0.1
+  cat_upper_body_poses: true
+  cat_upper_body_poses_prob: 0.5
+  adaptive_sampling:
+    enabled: true
+    bin_size: 50
+    init_num_failures: 1.0
+    uniform_sampling_rate: 0.1
+    pre_failure_sample_window: 200
+    max_failure_over_mean: 200.0
+model:
+  dof: 29
+  token_dim: 32
+  num_tokens: 2
+  # Exact current NVIDIA release hidden widths; choose preset=small for a cheaper model.
+  preset: small
+  g1_encoder_hidden: [1024, 768, 512, 256]
+  dynamic_decoder_hidden: [1536, 1536, 1024, 512, 512]
+  kinematic_decoder_hidden: [1024, 768, 512]
+  critic_hidden: [1536, 1024, 512, 256]
+ppo:
+  num_learning_iterations: 100000
+  num_steps_per_env: 24
+  num_learning_epochs: 5
+  num_mini_batches: 4
+  clip_param: 0.2
+  gamma: 0.99
+  lam: 0.95
+  value_loss_coef: 1.0
+  entropy_coef: 0.01
+  actor_learning_rate: 2.0e-5
+  critic_learning_rate: 1.0e-3
+  max_grad_norm: 0.1
+  schedule: adaptive
+  desired_kl: 0.01
+  adaptive_lr_min: 1.0e-5
+  adaptive_lr_max: 2.0e-4
+  init_noise_std: 0.05
+  std_clamp_min: 0.001
+  std_clamp_max: 0.5
+  save_interval: 500
+  eval_frequency: 500
+  aux_reconstruction_coef: 0.01
+reward:
+  tracking_anchor_pos: 0.5
+  tracking_anchor_ori: 0.5
+  tracking_relative_body_pos: 1.0
+  tracking_relative_body_ori: 1.0
+  tracking_body_linvel: 1.0
+  tracking_body_angvel: 1.0
+  tracking_vr_5point_local: 2.0
+  action_rate_l2: -0.1
+  joint_limit: -10.0
+  undesired_contacts: -0.1
+  anti_shake_ang_vel: -0.005
+  feet_acc: -2.5e-6
+termination:
+  anchor_pos: 0.15
+  anchor_ori: 0.2
+  ee_body_pos: 0.15
+  foot_pos_xyz: 0.2
+domain_randomization:
+  # SONIC motion-command reset ranges (release base motion config).
+  initial_pose:
+    x: [-0.05, 0.05]
+    y: [-0.05, 0.05]
+    z: [-0.01, 0.01]
+    roll: [-0.1, 0.1]
+    pitch: [-0.1, 0.1]
+    yaw: [-0.2, 0.2]
+  initial_velocity:
+    x: [-0.5, 0.5]
+    y: [-0.5, 0.5]
+    z: [-0.2, 0.2]
+    roll: [-0.52, 0.52]
+    pitch: [-0.52, 0.52]
+    yaw: [-0.78, 0.78]
+  initial_joint_position: [-0.1, 0.1]
+  initial_joint_velocity: [0.0, 0.0]
+  push_interval_s: [4.0, 6.0]
+  push_velocity:
+    x: [-0.5, 0.5]
+    y: [-0.5, 0.5]
+    z: [-0.2, 0.2]
+    roll: [-0.52, 0.52]
+    pitch: [-0.52, 0.52]
+    yaw: [-0.78, 0.78]
+  selected_body_mass_scale: [0.8, 2.5]
+observation_noise:
+  enabled: true
+  gravity: 0.05
+  base_ang_vel: 0.2
+  joint_pos: 0.01
+  joint_vel: 0.5
+  tokenizer_orientation: 0.05

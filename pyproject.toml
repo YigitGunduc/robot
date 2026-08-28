@@ -1,58 +1,31 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mini-groot-sonic"
+name = "sonic-groot-mjx-reference"
 version = "0.1.0"
-description = "Compact GR00T+SONIC-inspired G1 research scaffold using PyTorch and MuJoCo Warp"
-requires-python = ">=3.11"
+description = "MuJoCo-Warp/PyTorch reference implementation of SONIC-like G1 motion tracking and a compact GR00T-like action model."
+requires-python = ">=3.10"
 dependencies = [
   "numpy>=1.26",
-  "scipy>=1.11",
-  "pandas>=2.1",
   "torch>=2.3",
   "pyyaml>=6.0",
+  "pandas>=2.0",
+  "scipy>=1.11",
+  "joblib>=1.3",
+  "tqdm>=4.66",
 ]
 
 [project.optional-dependencies]
-sim = [
-  "mujoco>=3.3",
-  "mujoco-warp>=3.9.0.1",
-  "warp-lang>=1.8",
-]
-vlm = [
-  "transformers>=4.49",
-  "pillow>=10",
-  "safetensors>=0.4",
-]
-video = ["imageio>=2.34", "imageio-ffmpeg>=0.5"]
-dev = ["pytest>=8.0", "ruff>=0.6"]
-all = [
-  "mujoco>=3.3",
-  "mujoco-warp>=3.9.0.1",
-  "warp-lang>=1.8",
-  "transformers>=4.49",
-  "pillow>=10",
-  "safetensors>=0.4",
-  "imageio>=2.34",
-  "imageio-ffmpeg>=0.5",
-  "pytest>=8.0",
-]
-
-[project.scripts]
-mgsp-preprocess-bones = "mini_groot_sonic.tools.preprocess_bones:main"
-mgsp-build-curriculum = "mini_groot_sonic.tools.build_curriculum:main"
-mgsp-train-body = "mini_groot_sonic.tools.train_body:main"
-mgsp-train-curriculum = "mini_groot_sonic.tools.train_curriculum:main"
-mgsp-collect-replay = "mini_groot_sonic.tools.collect_replay:main"
-mgsp-train-flow = "mini_groot_sonic.tools.train_flow:main"
-mgsp-run-command = "mini_groot_sonic.tools.run_command:main"
-mgsp-eval-body = "mini_groot_sonic.tools.eval_body:main"
-mgsp-render-body = "mini_groot_sonic.tools.render_body:main"
+sim = ["mujoco>=3.4", "mujoco-warp", "warp-lang>=1.9"]
+hf = ["transformers>=4.57", "huggingface_hub>=0.30", "pillow>=10"]
+quantizer = ["vector-quantize-pytorch>=1.24"]
+dev = ["pytest>=8", "ruff>=0.7"]
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
+include = ["gear_sonic_mjx*", "groot_lite*"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+testpaths = ["tests"]

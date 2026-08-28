@@ -1,0 +1,20 @@
+backbone:
+  model_name: google/siglip2-base-patch16-224
+  frozen: true
+  feature_dim: 768
+model:
+  state_dim: 32
+  action_dim: 64
+  action_horizon: 16
+  hidden_dim: 512
+  layers: 8
+  heads: 8
+  mlp_ratio: 4.0
+  diffusion_steps: 4
+  state_history: 1
+train:
+  lr: 1.0e-4
+  weight_decay: 1.0e-5
+  warmup_fraction: 0.05
+  batch_size: 128
+  max_steps: 60000

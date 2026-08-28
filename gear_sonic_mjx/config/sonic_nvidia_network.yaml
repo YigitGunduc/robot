@@ -1,0 +1,11 @@
+# Exact G1 encoder/dynamic-decoder/kinematic-decoder/critic widths in NVIDIA's sonic_v1_1
+# released checkpoint config (August 2026). This file is informational; --network nvidia uses
+# ModelConfig.nvidia_release() and therefore these widths directly.
+model:
+  dof: 29
+  token_dim: 32
+  num_tokens: 2
+  g1_encoder_hidden: [2048, 1024, 512, 512]
+  dynamic_decoder_hidden: [4096, 4096, 2048, 2048, 1024, 1024, 512, 512]
+  kinematic_decoder_hidden: [2048, 1024, 512, 512]
+  critic_hidden: [4096, 4096, 2048, 2048, 1024, 1024, 512, 512]

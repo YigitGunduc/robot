@@ -1,0 +1,13 @@
+# Paper-oriented PPO preset where it differs from current release code.
+ppo:
+  num_steps_per_env: 24
+  num_learning_epochs: 5
+  num_mini_batches: 4
+  clip_param: 0.2
+  gamma: 0.99
+  lam: 0.95
+  actor_learning_rate: 2.0e-5
+  critic_learning_rate: 1.0e-3
+  desired_kl: 0.01
+  entropy_coef: 0.013
+  max_grad_norm: 0.1
