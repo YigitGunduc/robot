@@ -58,10 +58,14 @@ def split_motion_paths(
     seed: int,
 ) -> tuple[list[Path], list[Path]]:
     """Prefer actor-disjoint splits, then source-motion-disjoint splits."""
+    group_candidates = {path: _motion_group_candidates(path) for path in paths}
     groups: dict[str, list[Path]] = defaultdict(list)
-    for path in paths:
-        key = motion_group_key(path)
-        groups[key].append(path)
+    for candidate_index in range(3):
+        groups = defaultdict(list)
+        for path in paths:
+            groups[group_candidates[path][candidate_index]].append(path)
+        if len(groups) >= 2:
+            break
     keys = sorted(groups)
     random.Random(seed).shuffle(keys)
     if len(keys) < 2:
@@ -77,17 +81,25 @@ def split_motion_paths(
 
 
 def motion_group_key(path: str | Path) -> str:
+    return _motion_group_candidates(Path(path))[0]
+
+
+def _motion_group_candidates(path: Path) -> tuple[str, str, str]:
+    clip_key = f"clip:{path.stem}"
+    actor_key: str | None = None
+    source_key: str | None = None
     path = Path(path)
     with np.load(path, allow_pickle=True) as data:
         if "actor_uid" in data.files:
             actor = str(data["actor_uid"].item()).strip()
             if actor and actor.lower() not in {"nan", "none", "null"}:
-                return f"actor:{actor}"
+                actor_key = f"actor:{actor}"
         if "source_motion_id" in data.files:
             source = str(data["source_motion_id"].item()).strip()
             if source and source.lower() not in {"nan", "none", "null"}:
-                return f"source:{source}"
-    return f"clip:{path.stem}"
+                source_key = f"source:{source}"
+    source_key = source_key or clip_key
+    return actor_key or source_key, source_key, clip_key
 
 
 def split_curriculum_motion_paths(
@@ -99,14 +111,22 @@ def split_curriculum_motion_paths(
 
     if not stage_paths or not stage_paths[-1]:
         raise ValueError("Curriculum requires at least one non-empty stage")
-    key_by_path = {
-        path: motion_group_key(path)
-        for paths in stage_paths
-        for path in paths
-    }
+    unique_paths = list(dict.fromkeys(path for paths in stage_paths for path in paths))
+    group_candidates = {path: _motion_group_candidates(path) for path in unique_paths}
+    key_by_path: dict[Path, str] | None = None
+    for candidate_index in range(3):
+        candidate_keys = {
+            path: group_candidates[path][candidate_index] for path in unique_paths
+        }
+        if all(len({candidate_keys[path] for path in paths}) >= 2 for paths in stage_paths):
+            key_by_path = candidate_keys
+            break
+    if key_by_path is None:
+        raise ValueError(
+            "Every curriculum stage needs at least two motions for a stable "
+            "train/validation split"
+        )
     final_keys = sorted({key_by_path[path] for path in stage_paths[-1]})
-    if len(final_keys) < 2:
-        raise ValueError("Curriculum requires at least two actor/source groups")
     rng = random.Random(seed)
     rng.shuffle(final_keys)
     n_validation = min(

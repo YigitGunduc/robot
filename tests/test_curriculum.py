@@ -178,6 +178,33 @@ def test_curriculum_split_reserves_groups_across_all_stages(tmp_path: Path):
     )
 
 
+def test_curriculum_split_falls_back_to_source_when_first_stage_has_one_actor(
+    tmp_path: Path,
+):
+    paths = []
+    for index in range(5):
+        path = tmp_path / f"stand_{index}.npz"
+        _write_motion(path, path.stem, "standing", actor="shared-actor")
+        paths.append(path)
+
+    splits = split_curriculum_motion_paths(
+        [paths[:2], paths[:3], paths],
+        validation_fraction=0.25,
+        seed=3,
+    )
+    validation_names = {
+        path.name
+        for _, validation in splits
+        for path in validation
+    }
+    assert all(training and validation for training, validation in splits)
+    assert all(
+        path.name not in validation_names
+        for training, _ in splits
+        for path in training
+    )
+
+
 def test_failure_sampling_blends_uniform_coverage_with_failed_motions():
     bank = MotionBank.__new__(MotionBank)
     bank.base_sampling_weights = torch.ones(3)
