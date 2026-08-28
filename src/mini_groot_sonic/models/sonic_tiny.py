@@ -131,6 +131,7 @@ class TinySonicPolicy(nn.Module):
 class TinySonicCritic(nn.Module):
     def __init__(self, cfg: SonicTinyConfig, privileged_dim: int | None = None):
         super().__init__()
+        self.cfg = cfg
         self.privileged_dim = privileged_dim or cfg.critic_privileged_dim
         self.net = mlp(
             cfg.proprio_dim + cfg.reference_dim + self.privileged_dim,
@@ -143,6 +144,8 @@ class TinySonicCritic(nn.Module):
 
     @torch.no_grad()
     def set_reference_stats(self, mean: torch.Tensor, std: torch.Tensor) -> None:
+        if mean.shape != self.reference_mean.shape or std.shape != self.reference_std.shape:
+            raise ValueError("reference normalization statistics have the wrong shape")
         self.reference_mean.copy_(mean)
         self.reference_std.copy_(std.clamp_min(1e-4))
 
@@ -155,5 +158,5 @@ class TinySonicCritic(nn.Module):
         reference = (
             flatten_reference_features(future_reference, self.cfg.dof)
             - self.reference_mean
-        ) / self.reference_std
+        ) / self.reference_std.clamp_min(1e-4)
         return self.net(torch.cat([proprio_history, reference, privileged], dim=-1)).squeeze(-1)

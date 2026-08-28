@@ -2,7 +2,7 @@ import torch
 
 from mini_groot_sonic.config import FlowConfig, GoalConfig, SonicTinyConfig
 from mini_groot_sonic.models.flow_policy import TinyFlowMotionPolicy
-from mini_groot_sonic.models.sonic_tiny import TinySonicPolicy
+from mini_groot_sonic.models.sonic_tiny import TinySonicCritic, TinySonicPolicy
 
 
 def test_tiny_sonic_shapes():
@@ -82,3 +82,22 @@ def test_sonic_policy_uses_unsquashed_gaussian_actions():
     torch.testing.assert_close(dist.mean, mean)
     assert torch.all(action > 1.0)
     assert torch.isfinite(dist.log_prob(action)).all()
+
+
+def test_sonic_critic_applies_reference_normalization():
+    cfg = SonicTinyConfig(critic_hidden=(16,))
+    privileged_dim = 7
+    critic = TinySonicCritic(cfg, privileged_dim=privileged_dim)
+    critic.set_reference_stats(
+        torch.randn(cfg.reference_dim),
+        torch.rand(cfg.reference_dim),
+    )
+
+    batch_size = 3
+    values = critic(
+        torch.randn(batch_size, cfg.proprio_dim),
+        torch.randn(batch_size, cfg.future_frames, cfg.reference_frame_dim),
+        torch.randn(batch_size, privileged_dim),
+    )
+    assert values.shape == (batch_size,)
+    assert torch.isfinite(values).all()
