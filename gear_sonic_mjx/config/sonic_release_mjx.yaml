@@ -7,6 +7,7 @@ sim:
   decimation: 4
   episode_length_s: 10.0
   nconmax: null
+  naconmax: null
   njmax: null
 motion:
   source_fps: 120
@@ -73,11 +74,29 @@ reward:
   undesired_contacts: -0.1
   anti_shake_ang_vel: -0.005
   feet_acc: -2.5e-6
+  std_anchor_pos: 0.3
+  std_anchor_ori: 0.4
+  std_relative_body_pos: 0.3
+  std_relative_body_ori: 0.4
+  std_body_linvel: 1.0
+  std_body_angvel: 3.14
+  std_vr_5point_local: 0.1
+contact:
+  threshold: 1.0
+  allowed_body_names:
+    - left_ankle_roll_link
+    - right_ankle_roll_link
+    - left_wrist_yaw_link
+    - right_wrist_yaw_link
+    - left_elbow_link
+    - right_elbow_link
 termination:
   anchor_pos: 0.15
   anchor_ori: 0.2
   ee_body_pos: 0.15
   foot_pos_xyz: 0.2
+  down_threshold: 0.75
+  root_height_threshold: 0.5
 domain_randomization:
   # SONIC motion-command reset ranges (release base motion config).
   initial_pose:

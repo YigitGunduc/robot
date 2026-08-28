@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import shutil
+from pathlib import Path
 
 from .bones import NVIDIA_FILTER_KEYWORDS, should_filter_out
 
 
-def filter_and_copy(source: str, dest: str, extra_keywords: list[str] | None = None, dry_run: bool = False) -> dict[str, int]:
+def filter_and_copy(
+    source: str,
+    dest: str,
+    extra_keywords: list[str] | None = None,
+    dry_run: bool = False,
+) -> dict[str, int]:
     src, dst = Path(source), Path(dest)
     stats = {"total": 0, "copied": 0, "filtered": 0}
     for p in sorted(src.rglob("*")):

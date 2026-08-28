@@ -15,6 +15,7 @@ class G1IndexMap:
     actuator: torch.Tensor
     root_qpos_adr: int
     root_dof_adr: int
+    root_body_id: int
 
 
 class MjWarpBatchSim:
@@ -32,7 +33,15 @@ class MjWarpBatchSim:
         either switch them to motors or use your existing actuator path instead of `write_torque`.
     """
 
-    def __init__(self, mjcf_path: str | Path, nworld: int = 4096, timestep: float = 0.005, nconmax: int | None = None, njmax: int | None = None):
+    def __init__(
+        self,
+        mjcf_path: str | Path,
+        nworld: int = 4096,
+        timestep: float = 0.005,
+        nconmax: int | None = None,
+        njmax: int | None = None,
+        naconmax: int | None = None,
+    ):
         try:
             import mujoco
             import mujoco_warp as mjw
@@ -47,10 +56,13 @@ class MjWarpBatchSim:
         self.mj_model = mujoco.MjModel.from_xml_path(self.mjcf_path)
         self.mj_model.opt.timestep = float(timestep)
         self.index = self._build_index_map()
+        self._validate_torque_actuators()
         self.model = mjw.put_model(self.mj_model)
         kwargs = {"nworld": int(nworld)}
         if nconmax is not None:
             kwargs["nconmax"] = int(nconmax)
+        if naconmax is not None:
+            kwargs["naconmax"] = int(naconmax)
         if njmax is not None:
             kwargs["njmax"] = int(njmax)
         self.data = mjw.make_data(self.mj_model, **kwargs)
@@ -59,17 +71,31 @@ class MjWarpBatchSim:
         self.qvel = wp.to_torch(self.data.qvel)
         self.ctrl = wp.to_torch(self.data.ctrl)
         self.xpos = wp.to_torch(self.data.xpos) if hasattr(self.data, "xpos") else None
-        self.xquat = wp.to_torch(self.data.xquat) if hasattr(self.data, "xquat") else None
+        self.xquat = (
+            wp.to_torch(self.data.xquat) if hasattr(self.data, "xquat") else None
+        )
         self.cvel = wp.to_torch(self.data.cvel) if hasattr(self.data, "cvel") else None
+        self.cfrc_ext = (
+            wp.to_torch(self.data.cfrc_ext) if hasattr(self.data, "cfrc_ext") else None
+        )
+        self.overflow = (
+            wp.to_torch(self.data.overflow) if hasattr(self.data, "overflow") else None
+        )
         self._qpos_idx = self.index.qpos.to(self.qpos.device)
         self._qvel_idx = self.index.qvel.to(self.qvel.device)
         self._act_idx = self.index.actuator.to(self.ctrl.device)
 
     def _build_index_map(self) -> G1IndexMap:
         m, mujoco = self.mj_model, self.mujoco
-        free_ids = [j for j in range(m.njnt) if int(m.jnt_type[j]) == int(mujoco.mjtJoint.mjJNT_FREE)]
+        free_ids = [
+            j
+            for j in range(m.njnt)
+            if int(m.jnt_type[j]) == int(mujoco.mjtJoint.mjJNT_FREE)
+        ]
         if len(free_ids) != 1:
-            raise ValueError(f"Expected exactly one floating-base free joint, found {len(free_ids)}")
+            raise ValueError(
+                f"Expected exactly one floating-base free joint, found {len(free_ids)}"
+            )
         root = free_ids[0]
         qpos, qvel = [], []
         for name in G1_MUJOCO_JOINT_NAMES:
@@ -80,10 +106,15 @@ class MjWarpBatchSim:
             qvel.append(int(m.jnt_dofadr[jid]))
 
         # Map each named joint to its actuator through actuator_trnid[:,0].
-        act_by_joint = {}
+        act_by_joint: dict[int, int] = {}
         for aid in range(m.nu):
             jid = int(m.actuator_trnid[aid, 0])
             if jid >= 0:
+                if jid in act_by_joint:
+                    name = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_JOINT, jid)
+                    raise ValueError(
+                        f"Multiple actuators are attached to joint {name!r}"
+                    )
                 act_by_joint[jid] = aid
         acts = []
         for name in G1_MUJOCO_JOINT_NAMES:
@@ -92,9 +123,53 @@ class MjWarpBatchSim:
                 raise KeyError(f"No actuator directly attached to {name!r}")
             acts.append(act_by_joint[jid])
         return G1IndexMap(
-            torch.tensor(qpos, dtype=torch.long), torch.tensor(qvel, dtype=torch.long), torch.tensor(acts, dtype=torch.long),
-            int(m.jnt_qposadr[root]), int(m.jnt_dofadr[root]),
+            torch.tensor(qpos, dtype=torch.long),
+            torch.tensor(qvel, dtype=torch.long),
+            torch.tensor(acts, dtype=torch.long),
+            int(m.jnt_qposadr[root]),
+            int(m.jnt_dofadr[root]),
+            int(m.jnt_bodyid[root]),
         )
+
+    def _validate_torque_actuators(self) -> None:
+        """Fail fast unless ``ctrl`` is a one-to-one joint-torque command.
+
+        The controller computes physical joint torques. Position/velocity actuators,
+        non-unit transmissions, and stateful actuator dynamics would silently change
+        that meaning, so they must be adapted explicitly instead of passing preflight.
+        """
+        m, mujoco = self.mj_model, self.mujoco
+        if m.nu != 29:
+            raise ValueError(
+                f"Expected exactly 29 actuators for the 29-DOF G1, found {m.nu}"
+            )
+        for name, aid in zip(
+            G1_MUJOCO_JOINT_NAMES, self.index.actuator.tolist(), strict=True
+        ):
+            jid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, name)
+            if int(m.jnt_type[jid]) != int(mujoco.mjtJoint.mjJNT_HINGE):
+                raise ValueError(f"G1 joint {name!r} must be a scalar hinge joint")
+            if int(m.actuator_trntype[aid]) != int(mujoco.mjtTrn.mjTRN_JOINT):
+                raise ValueError(
+                    f"Actuator {aid} for {name!r} is not a joint transmission"
+                )
+            if int(m.actuator_dyntype[aid]) != int(mujoco.mjtDyn.mjDYN_NONE):
+                raise ValueError(
+                    f"Actuator {aid} for {name!r} has unsupported activation dynamics"
+                )
+            if int(m.actuator_gaintype[aid]) != int(mujoco.mjtGain.mjGAIN_FIXED):
+                raise ValueError(f"Actuator {aid} for {name!r} must use fixed gain")
+            if int(m.actuator_biastype[aid]) != int(mujoco.mjtBias.mjBIAS_NONE):
+                raise ValueError(
+                    f"Actuator {aid} for {name!r} must not add position/velocity bias"
+                )
+            gain = float(m.actuator_gainprm[aid, 0])
+            gear = float(m.actuator_gear[aid, 0])
+            if abs(gain - 1.0) > 1e-6 or abs(gear - 1.0) > 1e-6:
+                raise ValueError(
+                    f"Actuator {aid} for {name!r} must map ctrl directly to torque "
+                    f"(gain=1, gear=1); got gain={gain:g}, gear={gear:g}"
+                )
 
     @property
     def device(self) -> torch.device:
@@ -102,63 +177,157 @@ class MjWarpBatchSim:
 
     def root_pose(self) -> tuple[torch.Tensor, torch.Tensor]:
         a = self.index.root_qpos_adr
-        return self.qpos[:, a:a+3], self.qpos[:, a+3:a+7]
+        return self.qpos[:, a : a + 3], self.qpos[:, a + 3 : a + 7]
 
     def root_velocity(self) -> tuple[torch.Tensor, torch.Tensor]:
         a = self.index.root_dof_adr
-        return self.qvel[:, a:a+3], self.qvel[:, a+3:a+6]
+        return self.qvel[:, a : a + 3], self.qvel[:, a + 3 : a + 6]
 
     def joint_state(self) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.qpos.index_select(1, self._qpos_idx), self.qvel.index_select(1, self._qvel_idx)
-
+        return self.qpos.index_select(1, self._qpos_idx), self.qvel.index_select(
+            1, self._qvel_idx
+        )
 
     def body_ids(self, names: list[str]) -> torch.Tensor:
         ids = []
         for name in names:
-            bid = self.mujoco.mj_name2id(self.mj_model, self.mujoco.mjtObj.mjOBJ_BODY, name)
+            bid = self.mujoco.mj_name2id(
+                self.mj_model, self.mujoco.mjtObj.mjOBJ_BODY, name
+            )
             if bid < 0:
                 raise KeyError(f"MJCF missing body {name!r}")
             ids.append(bid)
         return torch.tensor(ids, dtype=torch.long, device=self.device)
 
+    def named_robot_bodies(self) -> list[str]:
+        """Names in the floating-base robot subtree, excluding scene/object bodies."""
+        names = []
+        for bid in range(1, self.mj_model.nbody):
+            ancestor = bid
+            while ancestor not in (0, self.index.root_body_id):
+                ancestor = int(self.mj_model.body_parentid[ancestor])
+            if ancestor != self.index.root_body_id:
+                continue
+            name = self.mujoco.mj_id2name(
+                self.mj_model, self.mujoco.mjtObj.mjOBJ_BODY, bid
+            )
+            if name:
+                names.append(name)
+        return names
+
     def body_state(self, body_ids: torch.Tensor) -> dict[str, torch.Tensor | None]:
-        pos = None if self.xpos is None else self.xpos.index_select(1, body_ids.to(self.xpos.device))
-        quat = None if self.xquat is None else self.xquat.index_select(1, body_ids.to(self.xquat.device))
+        pos = (
+            None
+            if self.xpos is None
+            else self.xpos.index_select(1, body_ids.to(self.xpos.device))
+        )
+        quat = (
+            None
+            if self.xquat is None
+            else self.xquat.index_select(1, body_ids.to(self.xquat.device))
+        )
         linvel = angvel = None
         if self.cvel is not None:
             cv = self.cvel.index_select(1, body_ids.to(self.cvel.device))
             # MuJoCo cvel convention stores angular then linear spatial velocity.
             angvel, linvel = cv[..., :3], cv[..., 3:6]
-        return {"body_pos": pos, "body_quat_wxyz": quat, "body_linvel": linvel, "body_angvel": angvel}
+        return {
+            "body_pos": pos,
+            "body_quat_wxyz": quat,
+            "body_linvel": linvel,
+            "body_angvel": angvel,
+        }
 
     def joint_limits(self) -> tuple[torch.Tensor, torch.Tensor]:
         lows, highs = [], []
         for name in G1_MUJOCO_JOINT_NAMES:
-            jid = self.mujoco.mj_name2id(self.mj_model, self.mujoco.mjtObj.mjOBJ_JOINT, name)
-            lows.append(float(self.mj_model.jnt_range[jid, 0])); highs.append(float(self.mj_model.jnt_range[jid, 1]))
-        return torch.tensor(lows, device=self.device), torch.tensor(highs, device=self.device)
+            jid = self.mujoco.mj_name2id(
+                self.mj_model, self.mujoco.mjtObj.mjOBJ_JOINT, name
+            )
+            lows.append(float(self.mj_model.jnt_range[jid, 0]))
+            highs.append(float(self.mj_model.jnt_range[jid, 1]))
+        return torch.tensor(lows, device=self.device), torch.tensor(
+            highs, device=self.device
+        )
+
+    def undesired_contact_count(
+        self, body_ids: torch.Tensor, threshold: float = 1.0
+    ) -> torch.Tensor:
+        """Count non-exempt bodies whose net external contact force exceeds a threshold."""
+        if self.cfrc_ext is None:
+            raise RuntimeError(
+                "MuJoCo-Warp build does not expose cfrc_ext contact forces"
+            )
+        spatial = self.cfrc_ext.index_select(1, body_ids.to(self.cfrc_ext.device))
+        # MuJoCo spatial vectors are ordered angular then linear.
+        force = spatial[..., 3:6]
+        return (torch.linalg.vector_norm(force, dim=-1) > float(threshold)).sum(dim=-1)
+
+    def overflow_flags(self) -> torch.Tensor:
+        if self.overflow is None:
+            return torch.zeros(self.nworld, dtype=torch.int32, device=self.device)
+        return self.overflow
+
+    def assert_no_overflow(self) -> None:
+        flags = self.overflow_flags()
+        if torch.any(flags != 0):
+            unique = torch.unique(flags[flags != 0]).detach().cpu().tolist()
+            raise RuntimeError(
+                "MuJoCo-Warp capacity overflow detected; increase nconmax/naconmax/njmax. "
+                f"Overflow flags: {unique}"
+            )
 
     @torch.no_grad()
-    def set_state(self, env_ids: torch.Tensor, root_pos: torch.Tensor, root_quat_wxyz: torch.Tensor, joint_pos: torch.Tensor, joint_vel: torch.Tensor | None = None, root_velocity6: torch.Tensor | None = None) -> None:
+    def set_state(
+        self,
+        env_ids: torch.Tensor,
+        root_pos: torch.Tensor,
+        root_quat_wxyz: torch.Tensor,
+        joint_pos: torch.Tensor,
+        joint_vel: torch.Tensor | None = None,
+        root_velocity6: torch.Tensor | None = None,
+    ) -> None:
         env_ids = env_ids.to(self.qpos.device, torch.long)
         a, d = self.index.root_qpos_adr, self.index.root_dof_adr
-        self.qpos[env_ids, a:a+3] = root_pos.to(self.qpos)
-        self.qpos[env_ids, a+3:a+7] = root_quat_wxyz.to(self.qpos)
+        self.qpos[env_ids, a : a + 3] = root_pos.to(self.qpos)
+        self.qpos[env_ids, a + 3 : a + 7] = root_quat_wxyz.to(self.qpos)
         self.qpos[env_ids[:, None], self._qpos_idx[None]] = joint_pos.to(self.qpos)
         self.qvel[env_ids] = 0.0
         if root_velocity6 is not None:
-            self.qvel[env_ids, d:d+6] = root_velocity6.to(self.qvel)
+            self.qvel[env_ids, d : d + 6] = root_velocity6.to(self.qvel)
         if joint_vel is not None:
             self.qvel[env_ids[:, None], self._qvel_idx[None]] = joint_vel.to(self.qvel)
         # Recompute derived quantities/contact state after externally changing qpos/qvel.
         self.mjw.forward(self.model, self.data)
 
-
     @torch.no_grad()
     def add_root_velocity(self, env_ids: torch.Tensor, delta6: torch.Tensor) -> None:
         env_ids = env_ids.to(self.qvel.device, torch.long)
         a = self.index.root_dof_adr
-        self.qvel[env_ids, a:a+6] += delta6.to(self.qvel)
+        self.qvel[env_ids, a : a + 6] += delta6.to(self.qvel)
+
+    def state_dict(self) -> dict[str, torch.Tensor]:
+        return {
+            "qpos": self.qpos.detach().cpu(),
+            "qvel": self.qvel.detach().cpu(),
+            "ctrl": self.ctrl.detach().cpu(),
+        }
+
+    @torch.no_grad()
+    def load_state_dict(self, state: dict[str, torch.Tensor]) -> None:
+        for name, target in (
+            ("qpos", self.qpos),
+            ("qvel", self.qvel),
+            ("ctrl", self.ctrl),
+        ):
+            value = state[name]
+            if value.shape != target.shape:
+                raise ValueError(
+                    f"simulator {name} shape mismatch: checkpoint {tuple(value.shape)}, "
+                    f"runtime {tuple(target.shape)}"
+                )
+            target.copy_(value.to(target))
+        self.mjw.forward(self.model, self.data)
 
     def configure_startup_domain_randomization(
         self,
@@ -178,12 +347,16 @@ class MjWarpBatchSim:
         that avoids 4096 separate model compilations.
         """
         import numpy as np
+
         rng = np.random.default_rng(seed)
         names = mass_body_names or []
         body_ids = []
         for name in names:
-            bid = self.mujoco.mj_name2id(self.mj_model, self.mujoco.mjtObj.mjOBJ_BODY, name)
-            if bid < 0: raise KeyError(name)
+            bid = self.mujoco.mj_name2id(
+                self.mj_model, self.mujoco.mjtObj.mjOBJ_BODY, name
+            )
+            if bid < 0:
+                raise KeyError(name)
             body_ids.append(bid)
         variants = []
         for _ in range(max(1, int(num_variants))):
@@ -204,6 +377,7 @@ class MjWarpBatchSim:
 
         def stack(field):
             return np.stack([getattr(variants[v], field) for v in assignment], axis=0)
+
         wp = self.wp
         # Fields required by MJWarp's documented per-world rigid-body variant contract.
         self.model.body_mass = wp.array(stack("body_mass"), dtype=float)
@@ -218,7 +392,9 @@ class MjWarpBatchSim:
     @torch.no_grad()
     def write_torque(self, torque_mj: torch.Tensor) -> None:
         if torque_mj.shape != (self.nworld, 29):
-            raise ValueError(f"Expected torque [{self.nworld},29], got {tuple(torque_mj.shape)}")
+            raise ValueError(
+                f"Expected torque [{self.nworld},29], got {tuple(torque_mj.shape)}"
+            )
         self.ctrl[:, self._act_idx] = torque_mj.to(self.ctrl)
 
     @torch.no_grad()

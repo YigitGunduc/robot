@@ -12,6 +12,15 @@ Clean-room Python/PyTorch reimplementation of the **public NVIDIA SONIC training
 
 This is not a copy of NVIDIA source code. It independently implements the interfaces, dimensions, hyperparameters and training behavior exposed by NVIDIA's paper/configs/repository, while changing Isaac Lab-specific infrastructure to MuJoCo-Warp and shrinking networks where requested.
 
+## Colab workflow
+
+Use [`notebooks/sonic_groot_colab.ipynb`](notebooks/sonic_groot_colab.ipynb) for the end-to-end
+Drive workflow. It includes a Drive mount, a dirty-tree guard plus `git pull --ff-only`, dependency
+installation, BONES extraction, hard MJCF/data preflight, reference videos, leakage-safe splits,
+memory-mapped packing, MJWarp benchmarking, staged SONIC training/evaluation, frozen-token export,
+and GR00T-Lite training. Full training toggles default to off so a missing/wrong MJCF cannot start an
+expensive run accidentally.
+
 ## What is implemented
 
 ### BONES-SEED
@@ -114,7 +123,7 @@ cd sonic_groot_mjx_reference
 python -m venv .venv
 source .venv/bin/activate
 pip install -U pip
-pip install -e '.[sim,hf,quantizer,dev]'
+pip install -e '.[sim,hf,quantizer,video,dev]'
 ```
 
 The simulator path uses direct `mujoco_warp` so the policy can remain PyTorch and Warp arrays can be exposed as zero-copy PyTorch CUDA tensors.
@@ -150,7 +159,52 @@ python scripts/augment_bones_fk.py \
   --mjcf path/to/g1.xml
 ```
 
-By default every named non-world body is cached. This avoids running a second reference FK simulation inside every GPU RL step.
+By default the canonical 14 tracked SONIC bodies are cached. This avoids running a second reference FK simulation inside every GPU RL step.
+
+Before packing or training, run the fail-fast semantic preflight and render representative clips:
+
+```bash
+python scripts/preflight_training.py \
+  --mjcf path/to/g1.xml \
+  --motions data/bones_30hz \
+  --output runs/preflight.json
+
+python scripts/render_reference_motion.py \
+  --mjcf path/to/g1.xml \
+  --motions data/bones_30hz \
+  --motion-id 0 \
+  --output runs/reference_000.mp4
+```
+
+Preflight verifies the control/motion clocks, exact 29-joint order, one-to-one unit-gain torque
+actuators, positive control direction, joint limits/default pose, required semantic bodies, finite
+motion data, quaternion norms, finite-difference joint velocities, and cached FK against the exact
+MJCF. It is a hard gate, not a warning report.
+
+Create deterministic train/validation/test splits before any augmentation or windowing, then pack
+each split separately:
+
+```bash
+python scripts/split_bones.py \
+  --motions data/bones_30hz \
+  --output data/bones_splits.json
+
+python scripts/pack_bones_mmap.py \
+  --motions data/bones_30hz \
+  --output data/bones_50hz_train \
+  --mjcf path/to/g1.xml \
+  --split-manifest data/bones_splits.json \
+  --split train --fps 50
+```
+
+Named mirrored/flip variants share a content group and cannot cross splits. The split manifest is
+validated for file overlap and group leakage.
+
+Packing always recomputes FK after 50-Hz joint/root resampling using `--mjcf`. This is intentional:
+interpolating a 30-Hz body cache independently would make body reward targets disagree with the
+resampled joint pose. Enable `--nvidia-upper-body-augment` only for the training split; export
+captioned GR00T tokens from the clean clips so donor upper-body motion cannot corrupt language
+alignment.
 
 ## 3. Train SONIC-Lite on MJWarp
 
@@ -191,6 +245,10 @@ If your GPU cannot fit 4096 worlds, change `num_envs` in `sonic_release_mjx.yaml
 
 For a new MJCF you may need explicit `nconmax` / `njmax`. Tune them in the MuJoCo-Warp viewer/test-speed tool and put them in the YAML. Fixed buffer overflow in GPU simulation must be treated as a training failure, not ignored.
 
+This implementation checks `nconmax`, `naconmax`, and `njmax` overflow flags every policy step. Use
+`scripts/benchmark_mjwarp.py` to compare world counts on the actual GPU; 4096 is the release setting,
+not an assumption about every GPU's optimum.
+
 ### Body names
 
 The released `sonic_release` experiment overrides the historical “5point” reward with three reward points: a point 0.5 m above `torso_link`, plus both wrist-yaw links. The full body-tracking set is 14 named G1 bodies and the foot termination uses both ankle-roll links. Those canonical names live in `gear_sonic_mjx/g1_parameters.py`.
@@ -210,8 +268,11 @@ After the low-level policy is good enough:
 
 ```bash
 python scripts/encode_bones_tokens.py \
-  --motions data/bones_30hz \
+  --motions data/bones_50hz_train \
   --checkpoint runs/sonic_small/checkpoint_XXXXXXX.pt \
+  --metadata /path/to/bones-seed/metadata/seed_metadata_v004.parquet \
+  --timelines /path/to/bones-seed/metadata/seed_metadata_v002_temporal_labels.jsonl \
+  --require-captions \
   --output data/bones_sonic_tokens
 ```
 
@@ -220,7 +281,7 @@ Each output file contains:
 ```text
 tokens [T,64]
 state  [T,32]   # 29 G1 body q + 3 projected gravity
-text   scalar   # weak filename-derived description unless you provide richer annotations
+captions [K] and/or timestamped timeline labels from official BONES metadata
 ```
 
 This implements the useful SONIC/GR00T hierarchy: GR00T predicts a compact motion representation; SONIC owns physical stabilization and 29 joint commands.
@@ -229,7 +290,8 @@ This implements the useful SONIC/GR00T hierarchy: GR00T predicts a compact motio
 
 ```bash
 python -m groot_lite.train \
-  --data data/bones_sonic_tokens \
+  --data data/bones_sonic_tokens_train \
+  --validation-data data/bones_sonic_tokens_validation \
   --output runs/groot_lite
 ```
 
@@ -333,6 +395,23 @@ local MPJPE      < 40 mm
 
 Then aim toward the public SONIC regime around >97% success and ~30 mm local MPJPE where comparable. `gear_sonic_mjx/evaluation.py` contains global/local MPJPE and success helpers.
 
+The executable held-out runner is:
+
+```bash
+python scripts/evaluate_sonic_mjwarp.py \
+  --mjcf path/to/g1.xml \
+  --motions data/bones_50hz_validation \
+  --checkpoint runs/sonic_small/checkpoint_XXXXXXX.pt \
+  --output runs/sonic_small/validation.json \
+  --min-success 0.95 \
+  --max-local-mpjpe-mm 40 \
+  --fail-on-gate
+```
+
+It performs deterministic no-noise/no-push/no-randomization rollouts, reports global/local/aligned
+MPJPE, root/joint errors, per-category success, and the hardest motions. The token exporter must run
+only after this gate passes.
+
 Do not trust aggregate success alone; report per motion family so standing/walking clips cannot hide failures on running, crouching, kneeling or transitions.
 
 ## Tests
@@ -341,7 +420,7 @@ Do not trust aggregate success alone; report per motion family so standing/walki
 pytest -q
 ```
 
-Current artifact validation: **9 tests passed**. They cover:
+Current artifact validation: **20 tests passed**, and `ruff check .` is clean. Tests cover:
 
 - 640-D G1 encoder contract
 - 930-D history and 994-D dynamic input
@@ -351,8 +430,19 @@ Current artifact validation: **9 tests passed**. They cover:
 - adaptive failure sampling
 - flow-matching action masks and sampling
 - PPO + auxiliary update
+- NVIDIA endpoint-exclusive 30/50-Hz resampling and clock alignment
+- released termination threshold formulas and low-root-height adaptation
+- normalized action → target → PD effort semantics
+- deterministic split grouping/leakage validation
+- adaptive sampler and Python/NumPy/Torch RNG checkpoint restoration
+- the real MuJoCo-Warp 3.12 API, batched torque mapping, physics variants, contact/overflow fields
+- exact 50-Hz FK recomputation and an end-to-end stationary tracking/frame-time rollout
 
-The current execution environment did not include your G1 MJCF, `mujoco_warp`, or a downloaded Hugging Face checkpoint, so those optional external-runtime paths were syntax/contract checked but could not be physically simulated here. The package intentionally fails loudly on missing joints, actuators, bodies, FK cache or optional dependencies.
+The repository still does not contain the user's exact G1 MJCF, and the local Google Drive BONES
+archives are macOS cloud placeholders. Therefore a physical MJWarp rollout and real BONES FK replay
+cannot be claimed from this checkout. The Colab notebook runs those remaining gates against the real
+Drive bytes and supplied MJCF; the package fails loudly on missing joints, actuators, bodies, FK
+cache, contact-force buffers, capacity overflow, non-finite training values, or optional dependencies.
 
 ## Primary references
 
@@ -377,10 +467,11 @@ label for each action chunk and otherwise samples one of the official full-motio
 
 ```bash
 python scripts/encode_bones_tokens.py \
-  --motions data/bones_30hz \
+  --motions data/bones_50hz_train \
   --checkpoint runs/sonic_small/checkpoint.pt \
   --metadata /path/to/bones-seed/metadata/seed_metadata_v004.parquet \
   --timelines /path/to/bones-seed/metadata/seed_metadata_v002_temporal_labels.jsonl \
+  --require-captions \
   --output data/bones_sonic_tokens
 
 python -m groot_lite.train --data data/bones_sonic_tokens --output runs/groot_lite

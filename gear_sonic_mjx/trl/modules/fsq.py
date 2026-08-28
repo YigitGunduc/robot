@@ -6,6 +6,7 @@ from torch import nn
 
 class ScalarFSQFallback(nn.Module):
     """Dependency-free finite scalar quantizer with STE."""
+
     def __init__(self, dim: int, levels: int = 32):
         super().__init__()
         if levels < 2:
@@ -28,7 +29,15 @@ class FSQ(nn.Module):
     NVIDIA, applying a `[levels] * token_dim` scalar grid independently to each token. Without the
     optional dependency, a parameter-free STE fallback preserves the same tensor contract.
     """
-    def __init__(self, dim: int, levels: int = 32, num_tokens: int = 1, token_dim: int | None = None, prefer_upstream: bool = True):
+
+    def __init__(
+        self,
+        dim: int,
+        levels: int = 32,
+        num_tokens: int = 1,
+        token_dim: int | None = None,
+        prefer_upstream: bool = True,
+    ):
         super().__init__()
         self.dim, self.levels = int(dim), int(levels)
         self.num_tokens = int(num_tokens)
@@ -39,6 +48,7 @@ class FSQ(nn.Module):
         if prefer_upstream:
             try:
                 from vector_quantize_pytorch import FSQ as UpstreamFSQ
+
                 self.upstream = UpstreamFSQ(levels=[self.levels] * self.token_dim)
             except ImportError:
                 pass

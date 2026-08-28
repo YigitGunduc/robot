@@ -5,10 +5,15 @@ from dataclasses import dataclass
 import torch
 
 from gear_sonic_mjx.config import RewardConfig
-from gear_sonic_mjx.math_utils import quat_angle_error, quat_mul_wxyz, quat_conjugate_wxyz, rotate_inverse_wxyz
+from gear_sonic_mjx.math_utils import (
+    quat_angle_error,
+    rotate_inverse_wxyz,
+)
 
 
-def gaussian_reward(error: torch.Tensor, std: float, reduce_dim: int | tuple[int, ...] | None = -1) -> torch.Tensor:
+def gaussian_reward(
+    error: torch.Tensor, std: float, reduce_dim: int | tuple[int, ...] | None = -1
+) -> torch.Tensor:
     if reduce_dim is not None:
         error = torch.sum(error * error, dim=reduce_dim)
     else:
@@ -49,52 +54,65 @@ class TrackingReference:
 class SonicReward:
     """SONIC reward composition with public weights and configurable kernels.
 
-    Exact kernel std values vary across term YAMLs/releases, so they are arguments instead of
-    silently guessed constants. The weights match the released base_5point_local_feet_acc config.
+    Kernel widths and weights match the current released base_5point_local_feet_acc composition.
     """
 
     def __init__(self, cfg: RewardConfig, stds: dict[str, float] | None = None):
         self.cfg = cfg
         self.stds = {
-            "root_pos": 0.2,
-            "root_ori": 0.3,
-            "body_pos": 0.15,
-            "body_ori": 0.3,
-            "linvel": 0.5,
-            "angvel": 0.5,
-            "fivepoint": 0.15,
+            "root_pos": cfg.std_anchor_pos,
+            "root_ori": cfg.std_anchor_ori,
+            "body_pos": cfg.std_relative_body_pos,
+            "body_ori": cfg.std_relative_body_ori,
+            "linvel": cfg.std_body_linvel,
+            "angvel": cfg.std_body_angvel,
+            "fivepoint": cfg.std_vr_5point_local,
             **(stds or {}),
         }
 
-    def __call__(self, s: TrackingState, r: TrackingReference) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    def __call__(
+        self, s: TrackingState, r: TrackingReference
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         terms: dict[str, torch.Tensor] = {}
-        terms["tracking_anchor_pos"] = gaussian_reward(s.root_pos - r.root_pos, self.stds["root_pos"])
+        terms["tracking_anchor_pos"] = gaussian_reward(
+            s.root_pos - r.root_pos, self.stds["root_pos"]
+        )
         ori_err = quat_angle_error(s.root_quat, r.root_quat)
-        terms["tracking_anchor_ori"] = torch.exp(-(ori_err**2) / self.stds["root_ori"]**2)
+        terms["tracking_anchor_ori"] = torch.exp(
+            -(ori_err**2) / self.stds["root_ori"] ** 2
+        )
 
         if s.body_pos is not None and r.body_pos is not None:
             # NVIDIA's command manager has already heading/translation-aligned the reference bodies.
             per_body = torch.sum((s.body_pos - r.body_pos) ** 2, dim=-1)
-            terms["tracking_relative_body_pos"] = torch.exp(-per_body.mean(dim=-1) / self.stds["body_pos"]**2)
+            terms["tracking_relative_body_pos"] = torch.exp(
+                -per_body.mean(dim=-1) / self.stds["body_pos"] ** 2
+            )
         else:
             terms["tracking_relative_body_pos"] = torch.zeros_like(ori_err)
 
         if s.body_quat is not None and r.body_quat is not None:
             # Reference orientations are already heading-aligned by the command manager.
             e = quat_angle_error(s.body_quat, r.body_quat)
-            terms["tracking_relative_body_ori"] = torch.exp(-torch.mean(e*e, dim=-1) / self.stds["body_ori"]**2)
+            terms["tracking_relative_body_ori"] = torch.exp(
+                -torch.mean(e * e, dim=-1) / self.stds["body_ori"] ** 2
+            )
         else:
             terms["tracking_relative_body_ori"] = torch.zeros_like(ori_err)
 
         if s.body_linvel is not None and r.body_linvel is not None:
             per_body = torch.sum((s.body_linvel - r.body_linvel) ** 2, dim=-1)
-            terms["tracking_body_linvel"] = torch.exp(-per_body.mean(dim=-1) / self.stds["linvel"]**2)
+            terms["tracking_body_linvel"] = torch.exp(
+                -per_body.mean(dim=-1) / self.stds["linvel"] ** 2
+            )
         else:
             terms["tracking_body_linvel"] = torch.zeros_like(ori_err)
 
         if s.body_angvel is not None and r.body_angvel is not None:
             per_body = torch.sum((s.body_angvel - r.body_angvel) ** 2, dim=-1)
-            terms["tracking_body_angvel"] = torch.exp(-per_body.mean(dim=-1) / self.stds["angvel"]**2)
+            terms["tracking_body_angvel"] = torch.exp(
+                -per_body.mean(dim=-1) / self.stds["angvel"] ** 2
+            )
         else:
             terms["tracking_body_angvel"] = torch.zeros_like(ori_err)
 
@@ -106,25 +124,43 @@ class SonicReward:
             sp_local = rotate_inverse_wxyz(sq, sp)
             rp_local = rotate_inverse_wxyz(rq, rp)
             per_point = torch.sum((sp_local - rp_local) ** 2, dim=-1)
-            terms["tracking_vr_5point_local"] = torch.exp(-per_point.mean(dim=-1) / self.stds["fivepoint"]**2)
+            terms["tracking_vr_5point_local"] = torch.exp(
+                -per_point.mean(dim=-1) / self.stds["fivepoint"] ** 2
+            )
         else:
             terms["tracking_vr_5point_local"] = torch.zeros_like(ori_err)
 
-        terms["action_rate_l2"] = torch.zeros_like(ori_err) if s.action is None or s.prev_action is None else torch.sum((s.action-s.prev_action)**2, dim=-1)
-        if s.joint_pos is not None and s.joint_lower is not None and s.joint_upper is not None:
+        terms["action_rate_l2"] = (
+            torch.zeros_like(ori_err)
+            if s.action is None or s.prev_action is None
+            else torch.sum((s.action - s.prev_action) ** 2, dim=-1)
+        )
+        if (
+            s.joint_pos is not None
+            and s.joint_lower is not None
+            and s.joint_upper is not None
+        ):
             below = (s.joint_lower - s.joint_pos).clamp_min(0)
             above = (s.joint_pos - s.joint_upper).clamp_min(0)
             terms["joint_limit"] = torch.sum(below + above, dim=-1)
         else:
             terms["joint_limit"] = torch.zeros_like(ori_err)
-        terms["undesired_contacts"] = torch.zeros_like(ori_err) if s.undesired_contact is None else s.undesired_contact.float()
+        terms["undesired_contacts"] = (
+            torch.zeros_like(ori_err)
+            if s.undesired_contact is None
+            else s.undesired_contact.float()
+        )
         if s.anti_shake_angvel is None:
             terms["anti_shake_ang_vel"] = torch.zeros_like(ori_err)
         else:
             # NVIDIA applies a 1.5 rad/s deadzone then mean-squares the excess per body.
             speed = torch.linalg.vector_norm(s.anti_shake_angvel, dim=-1)
             terms["anti_shake_ang_vel"] = torch.relu(speed - 1.5).square().mean(dim=-1)
-        terms["feet_acc"] = torch.zeros_like(ori_err) if s.feet_acc is None else torch.sum(s.feet_acc**2, dim=(-1,-2) if s.feet_acc.ndim == 3 else -1)
+        terms["feet_acc"] = (
+            torch.zeros_like(ori_err)
+            if s.feet_acc is None
+            else torch.sum(s.feet_acc**2, dim=(-1, -2) if s.feet_acc.ndim == 3 else -1)
+        )
 
         total = (
             self.cfg.tracking_anchor_pos * terms["tracking_anchor_pos"]

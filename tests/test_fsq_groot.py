@@ -13,7 +13,9 @@ def test_fsq_shape_gradient():
 
 
 def test_flow_model_mask_and_sampling():
-    model = FlowActionTransformer(action_dim=8, horizon=4, hidden_dim=32, layers=2, heads=4, condition_dim=32)
+    model = FlowActionTransformer(
+        action_dim=8, horizon=4, hidden_dim=32, layers=2, heads=4, condition_dim=32
+    )
     cond = torch.randn(3, 32)
     clean = torch.randn(3, 4, 8)
     mask = torch.ones_like(clean, dtype=torch.bool)

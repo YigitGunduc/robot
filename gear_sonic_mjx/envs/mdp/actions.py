@@ -5,9 +5,19 @@ import torch
 from gear_sonic_mjx.g1_parameters import ACTION_SCALE_MJ, DEFAULT_ANGLES_MJ
 
 
-def joint_position_target(action: torch.Tensor, default_angles: torch.Tensor | None = None, action_scale: torch.Tensor | None = None) -> torch.Tensor:
-    defaults = DEFAULT_ANGLES_MJ.to(action) if default_angles is None else default_angles.to(action)
-    scale = ACTION_SCALE_MJ.to(action) if action_scale is None else action_scale.to(action)
+def joint_position_target(
+    action: torch.Tensor,
+    default_angles: torch.Tensor | None = None,
+    action_scale: torch.Tensor | None = None,
+) -> torch.Tensor:
+    defaults = (
+        DEFAULT_ANGLES_MJ.to(action)
+        if default_angles is None
+        else default_angles.to(action)
+    )
+    scale = (
+        ACTION_SCALE_MJ.to(action) if action_scale is None else action_scale.to(action)
+    )
     return defaults + scale * action
 
 

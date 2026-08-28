@@ -21,6 +21,7 @@ dependencies = [
 sim = ["mujoco>=3.4", "mujoco-warp", "warp-lang>=1.9"]
 hf = ["transformers>=4.57", "huggingface_hub>=0.30", "pillow>=10"]
 quantizer = ["vector-quantize-pytorch>=1.24"]
+video = ["imageio[ffmpeg]>=2.35"]
 dev = ["pytest>=8", "ruff>=0.7"]
 
 [tool.setuptools.packages.find]

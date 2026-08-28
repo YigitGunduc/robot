@@ -6,6 +6,7 @@ import torch
 from torch import nn
 
 from gear_sonic_mjx.config import ModelConfig
+
 from .base_module import MLP
 from .fsq import FSQ
 
@@ -27,7 +28,9 @@ class UniversalTokenModule(nn.Module):
     is 994 when 10-frame proprioception history is used.
     """
 
-    def __init__(self, cfg: ModelConfig, num_future_frames: int = 10, history_length: int = 10):
+    def __init__(
+        self, cfg: ModelConfig, num_future_frames: int = 10, history_length: int = 10
+    ):
         super().__init__()
         self.cfg = cfg
         self.num_future_frames = int(num_future_frames)
@@ -43,7 +46,12 @@ class UniversalTokenModule(nn.Module):
             cfg.g1_encoder_hidden,
             self.flat_token_dim,
         )
-        self.quantizer = FSQ(self.flat_token_dim, levels=32, num_tokens=cfg.num_tokens, token_dim=cfg.token_dim)
+        self.quantizer = FSQ(
+            self.flat_token_dim,
+            levels=32,
+            num_tokens=cfg.num_tokens,
+            token_dim=cfg.token_dim,
+        )
         self.g1_dynamic_decoder = MLP(
             self.dynamic_input_dim,
             cfg.dynamic_decoder_hidden,
@@ -57,25 +65,38 @@ class UniversalTokenModule(nn.Module):
 
     def encode(self, g1_encoder_obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         if g1_encoder_obs.shape[-1] != self.encoder_input_dim:
-            raise ValueError(f"G1 encoder expected {self.encoder_input_dim}, got {g1_encoder_obs.shape[-1]}")
+            raise ValueError(
+                f"G1 encoder expected {self.encoder_input_dim}, got {g1_encoder_obs.shape[-1]}"
+            )
         latent = self.g1_encoder(g1_encoder_obs)
         token_flat = self.quantizer(latent)
         token = token_flat.reshape(token_flat.shape[0], *self.token_shape)
         return token, token_flat
 
-    def decode(self, token_flat: torch.Tensor, proprio_history: torch.Tensor) -> torch.Tensor:
+    def decode(
+        self, token_flat: torch.Tensor, proprio_history: torch.Tensor
+    ) -> torch.Tensor:
         x = torch.cat([token_flat, proprio_history], dim=-1)
         if x.shape[-1] != self.dynamic_input_dim:
-            raise ValueError(f"Dynamic decoder expected {self.dynamic_input_dim}, got {x.shape[-1]}")
+            raise ValueError(
+                f"Dynamic decoder expected {self.dynamic_input_dim}, got {x.shape[-1]}"
+            )
         return self.g1_dynamic_decoder(x)
 
-    def forward(self, g1_encoder_obs: torch.Tensor, proprio_history: torch.Tensor, compute_aux_loss: bool = True) -> UniversalTokenOutput:
+    def forward(
+        self,
+        g1_encoder_obs: torch.Tensor,
+        proprio_history: torch.Tensor,
+        compute_aux_loss: bool = True,
+    ) -> UniversalTokenOutput:
         token, token_flat = self.encode(g1_encoder_obs)
         action = self.decode(token_flat, proprio_history)
         recon = self.g1_kinematic_decoder(token_flat) if compute_aux_loss else None
         return UniversalTokenOutput(action, token, token_flat, recon)
 
-    def reconstruction_loss(self, output: UniversalTokenOutput, target_encoder_obs: torch.Tensor) -> torch.Tensor:
+    def reconstruction_loss(
+        self, output: UniversalTokenOutput, target_encoder_obs: torch.Tensor
+    ) -> torch.Tensor:
         if output.reconstruction is None:
             raise ValueError("forward(..., compute_aux_loss=True) required")
         return torch.mean((output.reconstruction - target_encoder_obs) ** 2)

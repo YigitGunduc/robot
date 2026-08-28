@@ -7,7 +7,13 @@ from torch import nn
 
 
 class MLP(nn.Module):
-    def __init__(self, input_dim: int, hidden_dims: Sequence[int], output_dim: int, activation: type[nn.Module] = nn.SiLU):
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dims: Sequence[int],
+        output_dim: int,
+        activation: type[nn.Module] = nn.SiLU,
+    ):
         super().__init__()
         dims = [input_dim, *hidden_dims, output_dim]
         layers: list[nn.Module] = []

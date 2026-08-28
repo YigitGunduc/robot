@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 import pandas as pd
-
 
 FULL_CAPTION_COLUMNS = (
     "content_natural_desc_1",
@@ -81,7 +79,9 @@ def load_seed_metadata(path: str | Path) -> dict[str, MotionAnnotations]:
     return out
 
 
-def load_seed_timelines(path: str | Path) -> dict[str, tuple[str | None, tuple[TimelineEvent, ...]]]:
+def load_seed_timelines(
+    path: str | Path,
+) -> dict[str, tuple[str | None, tuple[TimelineEvent, ...]]]:
     """Load NVIDIA/BONES timeline JSONL keyed by motion filename."""
     path = Path(path)
     out: dict[str, tuple[str | None, tuple[TimelineEvent, ...]]] = {}
@@ -96,11 +96,13 @@ def load_seed_timelines(path: str | Path) -> dict[str, tuple[str | None, tuple[T
                 desc = str(event.get("description", "")).strip()
                 if not desc:
                     continue
-                events.append(TimelineEvent(
-                    start_time=float(event["start_time"]),
-                    end_time=float(event["end_time"]),
-                    description=desc,
-                ))
+                events.append(
+                    TimelineEvent(
+                        start_time=float(event["start_time"]),
+                        end_time=float(event["end_time"]),
+                        description=desc,
+                    )
+                )
             overview = str(row.get("overview_description", "")).strip() or None
             out[filename] = (overview, tuple(events))
     return out

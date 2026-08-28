@@ -1,5 +1,6 @@
 from .schema import (
     AdaptiveSamplingConfig,
+    ContactConfig,
     ModelConfig,
     MotionConfig,
     ObservationNoiseConfig,
@@ -11,6 +12,14 @@ from .schema import (
 )
 
 __all__ = [
-    "AdaptiveSamplingConfig", "ModelConfig", "MotionConfig", "ObservationNoiseConfig", "PPOConfig", "RewardConfig",
-    "SimConfig", "SonicConfig", "TerminationConfig",
+    "AdaptiveSamplingConfig",
+    "ContactConfig",
+    "ModelConfig",
+    "MotionConfig",
+    "ObservationNoiseConfig",
+    "PPOConfig",
+    "RewardConfig",
+    "SimConfig",
+    "SonicConfig",
+    "TerminationConfig",
 ]

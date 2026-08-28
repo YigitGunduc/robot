@@ -23,7 +23,9 @@ class ProprioHistory:
     def __post_init__(self) -> None:
         self.device = torch.device(self.device)
         self.frame_dim = 3 + self.dof + self.dof + self.dof + 3
-        self.buffer = torch.zeros(self.num_envs, self.length, self.frame_dim, device=self.device)
+        self.buffer = torch.zeros(
+            self.num_envs, self.length, self.frame_dim, device=self.device
+        )
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
         if env_ids is None:
@@ -39,9 +41,13 @@ class ProprioHistory:
         prev_action: torch.Tensor,
         gravity_dir: torch.Tensor,
     ) -> torch.Tensor:
-        frame = torch.cat([base_ang_vel, joint_pos_rel, joint_vel, prev_action, gravity_dir], dim=-1)
+        frame = torch.cat(
+            [base_ang_vel, joint_pos_rel, joint_vel, prev_action, gravity_dir], dim=-1
+        )
         if frame.shape[-1] != self.frame_dim:
-            raise ValueError(f"Expected proprio frame dim {self.frame_dim}, got {frame.shape[-1]}")
+            raise ValueError(
+                f"Expected proprio frame dim {self.frame_dim}, got {frame.shape[-1]}"
+            )
         return frame
 
     def seed(
@@ -54,7 +60,9 @@ class ProprioHistory:
         gravity_dir: torch.Tensor,
     ) -> None:
         """Fill only reset environments with their current frame, without advancing other worlds."""
-        frame = self.make_frame(base_ang_vel, joint_pos_rel, joint_vel, prev_action, gravity_dir)
+        frame = self.make_frame(
+            base_ang_vel, joint_pos_rel, joint_vel, prev_action, gravity_dir
+        )
         if frame.shape[0] == self.num_envs:
             frame = frame.index_select(0, env_ids)
         if frame.shape[0] != env_ids.numel():
@@ -69,7 +77,9 @@ class ProprioHistory:
         prev_action: torch.Tensor,
         gravity_dir: torch.Tensor,
     ) -> torch.Tensor:
-        frame = self.make_frame(base_ang_vel, joint_pos_rel, joint_vel, prev_action, gravity_dir)
+        frame = self.make_frame(
+            base_ang_vel, joint_pos_rel, joint_vel, prev_action, gravity_dir
+        )
         self.buffer = torch.roll(self.buffer, shifts=-1, dims=1)
         self.buffer[:, -1] = frame
         return self.flat()
@@ -95,7 +105,9 @@ class PrivilegedHistory:
     def __post_init__(self) -> None:
         self.device = torch.device(self.device)
         self.frame_dim = 3 + 3 + self.dof + self.dof + self.dof
-        self.buffer = torch.zeros(self.num_envs, self.length, self.frame_dim, device=self.device)
+        self.buffer = torch.zeros(
+            self.num_envs, self.length, self.frame_dim, device=self.device
+        )
 
     def make_frame(
         self,
@@ -105,9 +117,13 @@ class PrivilegedHistory:
         joint_vel: torch.Tensor,
         prev_action: torch.Tensor,
     ) -> torch.Tensor:
-        frame = torch.cat([base_lin_vel, base_ang_vel, joint_pos_rel, joint_vel, prev_action], dim=-1)
+        frame = torch.cat(
+            [base_lin_vel, base_ang_vel, joint_pos_rel, joint_vel, prev_action], dim=-1
+        )
         if frame.shape[-1] != self.frame_dim:
-            raise ValueError(f"Expected critic-history frame dim {self.frame_dim}, got {frame.shape[-1]}")
+            raise ValueError(
+                f"Expected critic-history frame dim {self.frame_dim}, got {frame.shape[-1]}"
+            )
         return frame
 
     def seed(
@@ -119,7 +135,9 @@ class PrivilegedHistory:
         joint_vel: torch.Tensor,
         prev_action: torch.Tensor,
     ) -> None:
-        frame = self.make_frame(base_lin_vel, base_ang_vel, joint_pos_rel, joint_vel, prev_action)
+        frame = self.make_frame(
+            base_lin_vel, base_ang_vel, joint_pos_rel, joint_vel, prev_action
+        )
         if frame.shape[0] == self.num_envs:
             frame = frame.index_select(0, env_ids)
         if frame.shape[0] != env_ids.numel():
@@ -134,7 +152,9 @@ class PrivilegedHistory:
         joint_vel: torch.Tensor,
         prev_action: torch.Tensor,
     ) -> torch.Tensor:
-        frame = self.make_frame(base_lin_vel, base_ang_vel, joint_pos_rel, joint_vel, prev_action)
+        frame = self.make_frame(
+            base_lin_vel, base_ang_vel, joint_pos_rel, joint_vel, prev_action
+        )
         self.buffer = torch.roll(self.buffer, shifts=-1, dims=1)
         self.buffer[:, -1] = frame
         return self.flat()
@@ -164,9 +184,13 @@ def g1_tokenizer_observation(
     robot_q = robot_root_quat_wxyz[:, None, :].expand(-1, f, -1)
     root6 = relative_rotation_6d(robot_q, future_root_quat_wxyz)
     if orientation_noise > 0:
-        root6 = root6 + torch.empty_like(root6).uniform_(-orientation_noise, orientation_noise)
+        root6 = root6 + torch.empty_like(root6).uniform_(
+            -orientation_noise, orientation_noise
+        )
     return torch.cat([future_joint_pos, future_joint_vel, root6], dim=-1).reshape(b, -1)
 
 
-def dynamic_decoder_observation(token_flat: torch.Tensor, proprio_history: torch.Tensor) -> torch.Tensor:
+def dynamic_decoder_observation(
+    token_flat: torch.Tensor, proprio_history: torch.Tensor
+) -> torch.Tensor:
     return torch.cat([token_flat, proprio_history], dim=-1)

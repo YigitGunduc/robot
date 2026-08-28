@@ -14,6 +14,7 @@ class SimConfig:
     decimation: int = 4
     episode_length_s: float = 10.0
     nconmax: int | None = None
+    naconmax: int | None = None
     njmax: int | None = None
 
     @property
@@ -44,7 +45,9 @@ class MotionConfig:
     freeze_frame_aug_prob: float = 0.1
     cat_upper_body_poses: bool = True
     cat_upper_body_poses_prob: float = 0.5
-    adaptive_sampling: AdaptiveSamplingConfig = field(default_factory=AdaptiveSamplingConfig)
+    adaptive_sampling: AdaptiveSamplingConfig = field(
+        default_factory=AdaptiveSamplingConfig
+    )
 
 
 @dataclass
@@ -54,8 +57,12 @@ class ModelConfig:
     num_tokens: int = 2
     preset: str = "small"
     g1_encoder_hidden: list[int] = field(default_factory=lambda: [1024, 768, 512, 256])
-    dynamic_decoder_hidden: list[int] = field(default_factory=lambda: [1536, 1536, 1024, 512, 512])
-    kinematic_decoder_hidden: list[int] = field(default_factory=lambda: [1024, 768, 512])
+    dynamic_decoder_hidden: list[int] = field(
+        default_factory=lambda: [1536, 1536, 1024, 512, 512]
+    )
+    kinematic_decoder_hidden: list[int] = field(
+        default_factory=lambda: [1024, 768, 512]
+    )
     critic_hidden: list[int] = field(default_factory=lambda: [1536, 1024, 512, 256])
 
     @property
@@ -73,7 +80,7 @@ class ModelConfig:
         return self.dof * 2 + 6
 
     @classmethod
-    def nvidia_release(cls) -> "ModelConfig":
+    def nvidia_release(cls) -> ModelConfig:
         return cls(
             token_dim=32,
             num_tokens=2,
@@ -125,6 +132,34 @@ class RewardConfig:
     undesired_contacts: float = -0.1
     anti_shake_ang_vel: float = -0.005
     feet_acc: float = -2.5e-6
+    std_anchor_pos: float = 0.3
+    std_anchor_ori: float = 0.4
+    std_relative_body_pos: float = 0.3
+    std_relative_body_ori: float = 0.4
+    std_body_linvel: float = 1.0
+    std_body_angvel: float = 3.14
+    std_vr_5point_local: float = 0.1
+
+
+@dataclass
+class ContactConfig:
+    """Bodies exempt from SONIC's non-support-contact penalty.
+
+    NVIDIA's release permits contacts on ankles, wrists, and elbows. Every other
+    named robot body is penalized when its external contact force exceeds 1 N.
+    """
+
+    threshold: float = 1.0
+    allowed_body_names: list[str] = field(
+        default_factory=lambda: [
+            "left_ankle_roll_link",
+            "right_ankle_roll_link",
+            "left_wrist_yaw_link",
+            "right_wrist_yaw_link",
+            "left_elbow_link",
+            "right_elbow_link",
+        ]
+    )
 
 
 @dataclass
@@ -133,6 +168,8 @@ class TerminationConfig:
     anchor_ori: float = 0.2
     ee_body_pos: float = 0.15
     foot_pos_xyz: float = 0.2
+    down_threshold: float = 0.75
+    root_height_threshold: float = 0.5
 
 
 @dataclass
@@ -154,16 +191,21 @@ class SonicConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     ppo: PPOConfig = field(default_factory=PPOConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
+    contact: ContactConfig = field(default_factory=ContactConfig)
     termination: TerminationConfig = field(default_factory=TerminationConfig)
-    observation_noise: ObservationNoiseConfig = field(default_factory=ObservationNoiseConfig)
+    observation_noise: ObservationNoiseConfig = field(
+        default_factory=ObservationNoiseConfig
+    )
     domain_randomization: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "SonicConfig":
+    def from_yaml(cls, path: str | Path) -> SonicConfig:
         raw = yaml.safe_load(Path(path).read_text())
-        adaptive = AdaptiveSamplingConfig(**raw.get("motion", {}).pop("adaptive_sampling", {}))
+        adaptive = AdaptiveSamplingConfig(
+            **raw.get("motion", {}).pop("adaptive_sampling", {})
+        )
         motion = MotionConfig(**raw.get("motion", {}), adaptive_sampling=adaptive)
-        return cls(
+        cfg = cls(
             seed=raw.get("seed", 0),
             num_envs=raw.get("num_envs", 4096),
             sim=SimConfig(**raw.get("sim", {})),
@@ -171,7 +213,44 @@ class SonicConfig:
             model=ModelConfig(**raw.get("model", {})),
             ppo=PPOConfig(**raw.get("ppo", {})),
             reward=RewardConfig(**raw.get("reward", {})),
+            contact=ContactConfig(**raw.get("contact", {})),
             termination=TerminationConfig(**raw.get("termination", {})),
-            observation_noise=ObservationNoiseConfig(**raw.get("observation_noise", {})),
+            observation_noise=ObservationNoiseConfig(
+                **raw.get("observation_noise", {})
+            ),
             domain_randomization=raw.get("domain_randomization", {}),
         )
+        cfg.validate()
+        return cfg
+
+    def validate(self) -> None:
+        if self.model.dof != 29:
+            raise ValueError(f"G1 SONIC requires 29 DOF, got {self.model.dof}")
+        if self.sim.sim_dt <= 0 or self.sim.decimation <= 0:
+            raise ValueError("sim_dt and decimation must be positive")
+        expected_policy_dt = 1.0 / float(self.motion.target_fps)
+        if abs(self.sim.policy_dt - expected_policy_dt) > 1e-9:
+            raise ValueError(
+                "simulation/control clocks disagree: "
+                f"sim_dt*decimation={self.sim.policy_dt:g}s but target_fps="
+                f"{self.motion.target_fps} requires {expected_policy_dt:g}s"
+            )
+        future_stride = self.motion.dt_future_ref_frames * self.motion.target_fps
+        if abs(future_stride - round(future_stride)) > 1e-9:
+            raise ValueError(
+                "dt_future_ref_frames * target_fps must be an integer number of frames, "
+                f"got {future_stride}"
+            )
+        if (
+            self.motion.actor_prop_history_length
+            != self.motion.actor_actions_history_length
+        ):
+            raise ValueError(
+                "actor proprioception and action histories must have the same length"
+            )
+        if self.model.flat_token_dim != 64:
+            raise ValueError(
+                f"SONIC/GR00T interface requires a 64-D token, got {self.model.flat_token_dim}"
+            )
+        if self.num_envs <= 0:
+            raise ValueError("num_envs must be positive")

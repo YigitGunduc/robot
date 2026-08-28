@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import random
 from bisect import bisect_right
 from pathlib import Path
-import random
 
 import numpy as np
 import torch
@@ -22,8 +22,13 @@ class TokenTrajectoryDataset(Dataset):
     For each action window, local timeline text is preferred. If none overlaps the window center,
     a random official full-motion caption is sampled. Filename-derived text is only a last fallback.
     """
-    def __init__(self, root: str | Path, horizon: int = 16, prefer_timeline: bool = True):
-        self.files = sorted(p for p in Path(root).rglob("*.npz") if p.name != "_manifest.npz")
+
+    def __init__(
+        self, root: str | Path, horizon: int = 16, prefer_timeline: bool = True
+    ):
+        self.files = sorted(
+            p for p in Path(root).rglob("*.npz") if p.name != "_manifest.npz"
+        )
         self.horizon = int(horizon)
         self.prefer_timeline = bool(prefer_timeline)
         counts = []
@@ -67,10 +72,16 @@ class TokenTrajectoryDataset(Dataset):
         prev = 0 if fi == 0 else int(self.cumulative[fi - 1])
         t = int(idx - prev)
         with np.load(self.files[fi], allow_pickle=False) as d:
-            tokens = torch.from_numpy(d["tokens"][t:t + self.horizon]).float()
+            tokens = torch.from_numpy(d["tokens"][t : t + self.horizon]).float()
             state = torch.from_numpy(d["state"][t]).float()
             if self.prefer_timeline:
-                text = self._choose_text(d, t, self.horizon, self.fps[fi], self.files[fi].stem.replace("_", " "))
+                text = self._choose_text(
+                    d,
+                    t,
+                    self.horizon,
+                    self.fps[fi],
+                    self.files[fi].stem.replace("_", " "),
+                )
             elif "captions" in d and len(d["captions"]):
                 text = str(d["captions"][random.randrange(len(d["captions"]))])
             elif "text" in d:
@@ -78,7 +89,7 @@ class TokenTrajectoryDataset(Dataset):
             else:
                 text = self.files[fi].stem.replace("_", " ")
             if "action_mask" in d:
-                mask = torch.from_numpy(d["action_mask"][t:t + self.horizon]).bool()
+                mask = torch.from_numpy(d["action_mask"][t : t + self.horizon]).bool()
             else:
                 mask = torch.ones_like(tokens, dtype=torch.bool)
         return {"text": text, "state": state, "actions": tokens, "action_mask": mask}

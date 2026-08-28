@@ -8,7 +8,12 @@ def mpjpe(current: torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
     return torch.linalg.vector_norm(current - reference, dim=-1).mean(-1)
 
 
-def local_mpjpe(current: torch.Tensor, reference: torch.Tensor, current_root: torch.Tensor, reference_root: torch.Tensor) -> torch.Tensor:
+def local_mpjpe(
+    current: torch.Tensor,
+    reference: torch.Tensor,
+    current_root: torch.Tensor,
+    reference_root: torch.Tensor,
+) -> torch.Tensor:
     c = current - current_root[:, None]
     r = reference - reference_root[:, None]
     return torch.linalg.vector_norm(c - r, dim=-1).mean(-1)

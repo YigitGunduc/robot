@@ -1,7 +1,10 @@
 import torch
 
 from gear_sonic_mjx.config import ModelConfig
-from gear_sonic_mjx.envs.mdp.observations import ProprioHistory, g1_tokenizer_observation
+from gear_sonic_mjx.envs.mdp.observations import (
+    ProprioHistory,
+    g1_tokenizer_observation,
+)
 from gear_sonic_mjx.trl.modules.universal_token_modules import UniversalTokenModule
 
 
@@ -15,7 +18,13 @@ def test_nvidia_release_observation_shapes():
     enc = g1_tokenizer_observation(q, qd, root, future_root)
     assert enc.shape == (b, 640)
     hist = ProprioHistory(b, 29, 10)
-    prop = hist.push(torch.zeros(b,3), torch.zeros(b,29), torch.zeros(b,29), torch.zeros(b,29), torch.zeros(b,3))
+    prop = hist.push(
+        torch.zeros(b, 3),
+        torch.zeros(b, 29),
+        torch.zeros(b, 29),
+        torch.zeros(b, 29),
+        torch.zeros(b, 3),
+    )
     assert prop.shape == (b, 930)
     model = UniversalTokenModule(cfg, 10, 10)
     assert model.flat_token_dim == 64
@@ -24,8 +33,12 @@ def test_nvidia_release_observation_shapes():
 
 def test_small_model_forward():
     cfg = ModelConfig(
-        token_dim=4, num_tokens=2,
-        g1_encoder_hidden=[32], dynamic_decoder_hidden=[32], kinematic_decoder_hidden=[32], critic_hidden=[32],
+        token_dim=4,
+        num_tokens=2,
+        g1_encoder_hidden=[32],
+        dynamic_decoder_hidden=[32],
+        kinematic_decoder_hidden=[32],
+        critic_hidden=[32],
     )
     model = UniversalTokenModule(cfg, num_future_frames=2, history_length=2)
     b = 4
@@ -39,14 +52,23 @@ def test_small_model_forward():
 
 def test_privileged_history_shape():
     import torch
+
     from gear_sonic_mjx.envs.mdp.observations import PrivilegedHistory
+
     h = PrivilegedHistory(4, 29, 10)
-    out = h.push(torch.zeros(4,3), torch.zeros(4,3), torch.zeros(4,29), torch.zeros(4,29), torch.zeros(4,29))
+    out = h.push(
+        torch.zeros(4, 3),
+        torch.zeros(4, 3),
+        torch.zeros(4, 29),
+        torch.zeros(4, 29),
+        torch.zeros(4, 29),
+    )
     assert out.shape == (4, 930)
 
 
 def test_nvidia_release_widths():
     from gear_sonic_mjx.config import ModelConfig
+
     c = ModelConfig.nvidia_release()
     assert c.dynamic_decoder_hidden == [4096, 4096, 2048, 2048, 1024, 1024, 512, 512]
     assert c.critic_hidden == [4096, 4096, 2048, 2048, 1024, 1024, 512, 512]

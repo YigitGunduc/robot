@@ -26,45 +26,64 @@ def _quat_angvel(q_wxyz: np.ndarray, fps: float) -> np.ndarray:
     return out
 
 
-def augment_clip_with_mujoco_fk(clip: MotionClip, mjcf_path: str | Path, body_names: list[str]) -> MotionClip:
-    """Cache reference body kinematics once so GPU rollouts do not run reference FK every step."""
-    try:
-        import mujoco
-    except ImportError as exc:
-        raise ImportError("Install mujoco to build FK caches") from exc
-    m = mujoco.MjModel.from_xml_path(str(mjcf_path))
-    d = mujoco.MjData(m)
-    free = [j for j in range(m.njnt) if int(m.jnt_type[j]) == int(mujoco.mjtJoint.mjJNT_FREE)]
-    if len(free) != 1:
-        raise ValueError("Expected one free joint")
-    root_qadr = int(m.jnt_qposadr[free[0]])
-    qadr = []
-    for name in G1_MUJOCO_JOINT_NAMES:
-        jid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, name)
-        if jid < 0:
-            raise KeyError(name)
-        qadr.append(int(m.jnt_qposadr[jid]))
-    bids = []
-    for name in body_names:
-        bid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, name)
-        if bid < 0:
-            raise KeyError(f"MJCF missing body {name!r}")
-        bids.append(bid)
+class MujocoFKCache:
+    """Reusable CPU MuJoCo FK evaluator for a fixed MJCF/body contract."""
 
-    body_pos = np.empty((clip.num_frames, len(bids), 3), np.float32)
-    body_quat = np.empty((clip.num_frames, len(bids), 4), np.float32)
-    for i in range(clip.num_frames):
-        d.qpos[root_qadr:root_qadr+3] = clip.root_pos[i]
-        d.qpos[root_qadr+3:root_qadr+7] = clip.root_quat_wxyz[i]
-        d.qpos[qadr] = clip.joint_pos[i]
-        mujoco.mj_forward(m, d)
-        body_pos[i] = d.xpos[bids]
-        body_quat[i] = d.xquat[bids]
-    body_linvel = np.gradient(body_pos, 1.0 / clip.fps, axis=0, edge_order=1).astype(np.float32)
-    body_angvel = _quat_angvel(body_quat, clip.fps)
-    clip.body_names = tuple(body_names)
-    clip.body_pos = body_pos
-    clip.body_quat_wxyz = body_quat
-    clip.body_linvel = body_linvel
-    clip.body_angvel = body_angvel
-    return clip
+    def __init__(self, mjcf_path: str | Path, body_names: list[str]):
+        try:
+            import mujoco
+        except ImportError as exc:
+            raise ImportError("Install mujoco to build FK caches") from exc
+        self.mujoco = mujoco
+        self.model = mujoco.MjModel.from_xml_path(str(mjcf_path))
+        self.data = mujoco.MjData(self.model)
+        self.body_names = tuple(body_names)
+        free = [
+            joint
+            for joint in range(self.model.njnt)
+            if int(self.model.jnt_type[joint]) == int(mujoco.mjtJoint.mjJNT_FREE)
+        ]
+        if len(free) != 1:
+            raise ValueError("Expected one free joint")
+        self.root_qadr = int(self.model.jnt_qposadr[free[0]])
+        self.qadr = []
+        for name in G1_MUJOCO_JOINT_NAMES:
+            joint = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
+            if joint < 0:
+                raise KeyError(name)
+            self.qadr.append(int(self.model.jnt_qposadr[joint]))
+        self.body_ids = []
+        for name in self.body_names:
+            body = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, name)
+            if body < 0:
+                raise KeyError(f"MJCF missing body {name!r}")
+            self.body_ids.append(body)
+
+    def augment(self, clip: MotionClip) -> MotionClip:
+        body_pos = np.empty((clip.num_frames, len(self.body_ids), 3), np.float32)
+        body_quat = np.empty((clip.num_frames, len(self.body_ids), 4), np.float32)
+        self.mujoco.mj_resetData(self.model, self.data)
+        for frame in range(clip.num_frames):
+            self.data.qpos[self.root_qadr : self.root_qadr + 3] = clip.root_pos[frame]
+            self.data.qpos[self.root_qadr + 3 : self.root_qadr + 7] = (
+                clip.root_quat_wxyz[frame]
+            )
+            self.data.qpos[self.qadr] = clip.joint_pos[frame]
+            self.mujoco.mj_forward(self.model, self.data)
+            body_pos[frame] = self.data.xpos[self.body_ids]
+            body_quat[frame] = self.data.xquat[self.body_ids]
+        clip.body_names = self.body_names
+        clip.body_pos = body_pos
+        clip.body_quat_wxyz = body_quat
+        clip.body_linvel = np.gradient(
+            body_pos, 1.0 / clip.fps, axis=0, edge_order=1
+        ).astype(np.float32)
+        clip.body_angvel = _quat_angvel(body_quat, clip.fps)
+        return clip
+
+
+def augment_clip_with_mujoco_fk(
+    clip: MotionClip, mjcf_path: str | Path, body_names: list[str]
+) -> MotionClip:
+    """One-shot compatibility wrapper around :class:`MujocoFKCache`."""
+    return MujocoFKCache(mjcf_path, body_names).augment(clip)

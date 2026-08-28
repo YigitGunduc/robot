@@ -9,7 +9,10 @@ from torch import nn
 
 def sinusoidal_time_embedding(t: torch.Tensor, dim: int) -> torch.Tensor:
     half = dim // 2
-    freqs = torch.exp(torch.arange(half, device=t.device, dtype=t.dtype) * (-math.log(10000.0) / max(half - 1, 1)))
+    freqs = torch.exp(
+        torch.arange(half, device=t.device, dtype=t.dtype)
+        * (-math.log(10000.0) / max(half - 1, 1))
+    )
     phase = t[:, None] * freqs[None]
     emb = torch.cat([phase.sin(), phase.cos()], dim=-1)
     if emb.shape[-1] < dim:
@@ -36,8 +39,12 @@ class FrozenSiglip2Backbone(nn.Module):
         self.model.requires_grad_(False)
         self.model.eval()
         cfg = self.model.config
-        self.image_dim = int(getattr(getattr(cfg, "vision_config", cfg), "hidden_size", 768))
-        self.text_dim = int(getattr(getattr(cfg, "text_config", cfg), "hidden_size", 768))
+        self.image_dim = int(
+            getattr(getattr(cfg, "vision_config", cfg), "hidden_size", 768)
+        )
+        self.text_dim = int(
+            getattr(getattr(cfg, "text_config", cfg), "hidden_size", 768)
+        )
 
     def train(self, mode: bool = True):
         super().train(mode)
@@ -46,7 +53,9 @@ class FrozenSiglip2Backbone(nn.Module):
 
     @torch.no_grad()
     def encode_text(self, texts: list[str], device: torch.device) -> torch.Tensor:
-        batch = self.processor(text=texts, padding="max_length", truncation=True, return_tensors="pt")
+        batch = self.processor(
+            text=texts, padding="max_length", truncation=True, return_tensors="pt"
+        )
         batch = {k: v.to(device) for k, v in batch.items() if torch.is_tensor(v)}
         if hasattr(self.model, "get_text_features"):
             feat = self.model.get_text_features(**batch)
@@ -72,10 +81,16 @@ class ConditionProjector(nn.Module):
         super().__init__()
         self.text = nn.Linear(text_dim, hidden_dim)
         self.image = nn.Linear(image_dim, hidden_dim)
-        self.state = nn.Sequential(nn.Linear(state_dim, hidden_dim), nn.SiLU(), nn.Linear(hidden_dim, hidden_dim))
+        self.state = nn.Sequential(
+            nn.Linear(state_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
         self.norm = nn.LayerNorm(hidden_dim)
 
-    def forward(self, text: torch.Tensor, state: torch.Tensor, image: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self, text: torch.Tensor, state: torch.Tensor, image: torch.Tensor | None = None
+    ) -> torch.Tensor:
         x = self.text(text) + self.state(state)
         if image is not None:
             x = x + self.image(image)
@@ -89,22 +104,51 @@ class FlowActionTransformer(nn.Module):
     grippers, task-space targets) can be appended and masked per training example.
     """
 
-    def __init__(self, action_dim: int = 64, horizon: int = 16, hidden_dim: int = 512, layers: int = 8, heads: int = 8, ff_mult: int = 4, condition_dim: int = 512):
+    def __init__(
+        self,
+        action_dim: int = 64,
+        horizon: int = 16,
+        hidden_dim: int = 512,
+        layers: int = 8,
+        heads: int = 8,
+        ff_mult: int = 4,
+        condition_dim: int = 512,
+    ):
         super().__init__()
         self.action_dim, self.horizon, self.hidden_dim = action_dim, horizon, hidden_dim
         self.action_in = nn.Linear(action_dim, hidden_dim)
-        self.time_mlp = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.SiLU(), nn.Linear(hidden_dim, hidden_dim))
+        self.time_mlp = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
         self.cond_in = nn.Linear(condition_dim, hidden_dim)
         self.pos = nn.Parameter(torch.zeros(1, horizon + 1, hidden_dim))
-        layer = nn.TransformerEncoderLayer(hidden_dim, heads, hidden_dim * ff_mult, batch_first=True, activation="gelu", norm_first=True)
-        self.transformer = nn.TransformerEncoder(layer, num_layers=layers)
+        layer = nn.TransformerEncoderLayer(
+            hidden_dim,
+            heads,
+            hidden_dim * ff_mult,
+            batch_first=True,
+            activation="gelu",
+            norm_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(
+            layer, num_layers=layers, enable_nested_tensor=False
+        )
         self.norm = nn.LayerNorm(hidden_dim)
         self.action_out = nn.Linear(hidden_dim, action_dim)
         nn.init.normal_(self.pos, std=0.02)
 
-    def forward(self, noisy_actions: torch.Tensor, flow_time: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        noisy_actions: torch.Tensor,
+        flow_time: torch.Tensor,
+        condition: torch.Tensor,
+    ) -> torch.Tensor:
         if noisy_actions.shape[1:] != (self.horizon, self.action_dim):
-            raise ValueError(f"expected actions [B,{self.horizon},{self.action_dim}], got {tuple(noisy_actions.shape)}")
+            raise ValueError(
+                f"expected actions [B,{self.horizon},{self.action_dim}], got {tuple(noisy_actions.shape)}"
+            )
         t = self.time_mlp(sinusoidal_time_embedding(flow_time, self.hidden_dim))
         cond = self.cond_in(condition) + t
         tokens = self.action_in(noisy_actions)
@@ -112,7 +156,12 @@ class FlowActionTransformer(nn.Module):
         x = self.transformer(x)
         return self.action_out(self.norm(x[:, 1:]))
 
-    def flow_matching_loss(self, clean_actions: torch.Tensor, condition: torch.Tensor, action_mask: torch.Tensor | None = None) -> torch.Tensor:
+    def flow_matching_loss(
+        self,
+        clean_actions: torch.Tensor,
+        condition: torch.Tensor,
+        action_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         b = clean_actions.shape[0]
         eps = torch.randn_like(clean_actions)
         tau = torch.rand(b, device=clean_actions.device, dtype=clean_actions.dtype)
@@ -127,9 +176,25 @@ class FlowActionTransformer(nn.Module):
         return (loss * mask).sum() / mask.sum().clamp_min(1.0)
 
     @torch.no_grad()
-    def sample(self, condition: torch.Tensor, steps: int = 4, initial_noise: torch.Tensor | None = None, action_mask: torch.Tensor | None = None) -> torch.Tensor:
+    def sample(
+        self,
+        condition: torch.Tensor,
+        steps: int = 4,
+        initial_noise: torch.Tensor | None = None,
+        action_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         b = condition.shape[0]
-        x = torch.randn(b, self.horizon, self.action_dim, device=condition.device, dtype=condition.dtype) if initial_noise is None else initial_noise
+        x = (
+            torch.randn(
+                b,
+                self.horizon,
+                self.action_dim,
+                device=condition.device,
+                dtype=condition.dtype,
+            )
+            if initial_noise is None
+            else initial_noise
+        )
         dt = 1.0 / float(steps)
         for i in range(steps):
             tau = torch.full((b,), i / float(steps), device=x.device, dtype=x.dtype)
@@ -147,15 +212,40 @@ class GrootLiteOutput:
 
 
 class GrootLitePolicy(nn.Module):
-    def __init__(self, backbone: FrozenSiglip2Backbone, state_dim: int = 32, action_dim: int = 64, horizon: int = 16, hidden_dim: int = 512, layers: int = 8, heads: int = 8):
+    def __init__(
+        self,
+        backbone: FrozenSiglip2Backbone,
+        state_dim: int = 32,
+        action_dim: int = 64,
+        horizon: int = 16,
+        hidden_dim: int = 512,
+        layers: int = 8,
+        heads: int = 8,
+    ):
         super().__init__()
         self.backbone = backbone
-        self.condition = ConditionProjector(backbone.text_dim, backbone.image_dim, state_dim, hidden_dim)
-        self.action_head = FlowActionTransformer(action_dim, horizon, hidden_dim, layers, heads, condition_dim=hidden_dim)
+        self.condition = ConditionProjector(
+            backbone.text_dim, backbone.image_dim, state_dim, hidden_dim
+        )
+        self.action_head = FlowActionTransformer(
+            action_dim, horizon, hidden_dim, layers, heads, condition_dim=hidden_dim
+        )
 
-    def make_condition(self, text_features: torch.Tensor, state: torch.Tensor, image_features: torch.Tensor | None = None):
+    def make_condition(
+        self,
+        text_features: torch.Tensor,
+        state: torch.Tensor,
+        image_features: torch.Tensor | None = None,
+    ):
         return self.condition(text_features, state, image_features)
 
-    def loss(self, text_features: torch.Tensor, state: torch.Tensor, actions: torch.Tensor, image_features: torch.Tensor | None = None, action_mask: torch.Tensor | None = None):
+    def loss(
+        self,
+        text_features: torch.Tensor,
+        state: torch.Tensor,
+        actions: torch.Tensor,
+        image_features: torch.Tensor | None = None,
+        action_mask: torch.Tensor | None = None,
+    ):
         cond = self.make_condition(text_features, state, image_features)
         return self.action_head.flow_matching_loss(actions, cond, action_mask)
