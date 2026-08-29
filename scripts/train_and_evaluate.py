@@ -100,26 +100,38 @@ def convert_and_pack(args: argparse.Namespace, selected_file: Path, repo: Path) 
             env = os.environ.copy()
             env.setdefault("WANDB_MODE", "offline")
             env.setdefault("MUJOCO_GL", "egl")
-            run(
-                [
-                    sys.executable,
-                    "-m",
-                    "mjlab.scripts.csv_to_npz",
-                    "--input-file",
-                    str(converted_csv),
-                    "--output-name",
-                    stem,
-                    "--input-fps",
-                    str(args.input_fps),
-                    "--output-fps",
-                    "50",
-                    "--render",
-                    "False",
-                ],
-                cwd=repo,
-                env=env,
-            )
             generated = Path("/tmp/motion.npz")
+            generated.unlink(missing_ok=True)
+            try:
+                run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "mjlab.scripts.csv_to_npz",
+                        "--input-file",
+                        str(converted_csv),
+                        "--output-name",
+                        stem,
+                        "--input-fps",
+                        str(args.input_fps),
+                        "--output-fps",
+                        "50",
+                        "--render",
+                        "False",
+                    ],
+                    cwd=repo,
+                    env=env,
+                )
+            except subprocess.CalledProcessError:
+                # mjlab writes the local NPZ before attempting its optional W&B
+                # upload. Keep using the local artifact when that upload fails.
+                if not generated.exists():
+                    raise
+                print(
+                    "WARNING: mjlab conversion returned nonzero after creating "
+                    f"{generated}; continuing with the local NPZ",
+                    flush=True,
+                )
             if not generated.exists():
                 raise FileNotFoundError(
                     "mjlab conversion completed but /tmp/motion.npz was not found"
