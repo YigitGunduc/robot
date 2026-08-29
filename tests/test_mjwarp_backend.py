@@ -11,6 +11,7 @@ from gear_sonic_mjx.g1_parameters import (
     G1_MUJOCO_JOINT_NAMES,
     SONIC_TRACKED_BODY_NAMES,
 )
+from scripts.render_reference_motion import ensure_offscreen_framebuffer
 
 
 def _minimal_g1_xml(*, semantic_bodies: bool = False) -> str:
@@ -67,6 +68,23 @@ def test_real_mjwarp_backend_api_and_torque_mapping(tmp_path: Path):
     sim.step()
     sim.assert_no_overflow()
     assert torch.isfinite(sim.qpos).all()
+
+
+def test_reference_renderer_expands_offscreen_framebuffer(tmp_path: Path):
+    mujoco = pytest.importorskip("mujoco")
+    path = tmp_path / "minimal_g1.xml"
+    path.write_text(_minimal_g1_xml())
+    model = mujoco.MjModel.from_xml_path(str(path))
+
+    original_width = int(model.vis.global_.offwidth)
+    original_height = int(model.vis.global_.offheight)
+    ensure_offscreen_framebuffer(model, 960, 720)
+    assert model.vis.global_.offwidth >= max(original_width, 960)
+    assert model.vis.global_.offheight >= max(original_height, 720)
+
+    ensure_offscreen_framebuffer(model, 320, 240)
+    assert model.vis.global_.offwidth >= 960
+    assert model.vis.global_.offheight >= 720
 
 
 def test_resampled_fk_is_recomputed_from_final_joint_pose(tmp_path: Path):

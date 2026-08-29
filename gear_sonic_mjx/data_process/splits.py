@@ -9,14 +9,25 @@ SPLIT_NAMES = ("train", "validation", "test")
 _MIRROR_TOKEN = re.compile(
     r"(^|[_\-])(mirror(?:ed)?|flip(?:ped)?)(?=[_\-]|$)", re.IGNORECASE
 )
+_NORMALIZED_BONES_ACTOR_SUFFIX = re.compile(r"_a\d+$", re.IGNORECASE)
 
 
-def motion_group_key(path_or_name: str | Path) -> str:
-    """Return a stable content key that keeps named mirror/flip variants together."""
+def mirror_group_key(path_or_name: str | Path) -> str:
+    """Return a stable key for mirror/flip variants of one BONES actor clip."""
     stem = Path(path_or_name).stem.lower()
+    # BONES uses a terminal `_M` for the mirrored partner rather than spelling out "mirror".
+    stem = re.sub(r"[_-]m$", "", stem)
     stem = _MIRROR_TOKEN.sub("_", stem)
     stem = re.sub(r"[_\-]+", "_", stem).strip("_")
     return stem
+
+
+def motion_group_key(path_or_name: str | Path) -> str:
+    """Return a content key that groups mirror and actor retarget variants."""
+    stem = mirror_group_key(path_or_name)
+    # Retargets of the same source take use terminal actor variants such as ``__A001``.
+    # Keep those near-duplicates in one split along with their mirrored partners.
+    return _NORMALIZED_BONES_ACTOR_SUFFIX.sub("", stem)
 
 
 def deterministic_split(

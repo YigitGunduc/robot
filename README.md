@@ -21,6 +21,14 @@ memory-mapped packing, MJWarp benchmarking, staged SONIC training/evaluation, fr
 and GR00T-Lite training. Full training toggles default to off so a missing/wrong MJCF cannot start an
 expensive run accidentally.
 
+The notebook defaults to a deterministic `easy_512` curriculum: conservative standing-idle,
+forward-walking, turning, and simple gesture clips with neutral poses, no props, and no complex or
+high-impact actions. On its first run it materializes those clips from the completed full 30-Hz
+cache and atomically saves a compact Drive cache. Later Colab sessions restore only the compact
+cache. Subset-packed data, videos, checkpoints, metrics, and token datasets are namespaced with
+`easy_512`, so they cannot be mistaken for full-BONES results. Use this curriculum to validate the
+entire training path, then increase the subset size before moving to full BONES.
+
 ## What is implemented
 
 ### BONES-SEED
@@ -42,7 +50,7 @@ expensive run accidentally.
 - 2 × 32 FSQ universal motion token = **64 D**
 - dynamic decoder input = **994 D**
 - G1 encoder -> FSQ -> dynamic decoder + auxiliary kinematic decoder
-- same public FSQ package as NVIDIA when `vector-quantize-pytorch` is installed; dependency-free STE fallback otherwise
+- safe parameter-free scalar FSQ for SONIC's non-enumerable 32-level × 32-D grids; the public package is used only for small, enumerable grids
 - Gaussian stochastic PPO actor with learned/clamped standard deviation
 - asymmetric critic interface closely matching the release composition: future q/qd, reference-anchor error, current privileged body pose, and clean 10-frame base/joint/action history (**1,645 D** for the 14-body G1 set)
 - PPO clipping, GAE, entropy, value clipping, gradient clipping
@@ -420,13 +428,14 @@ Do not trust aggregate success alone; report per motion family so standing/walki
 pytest -q
 ```
 
-Current artifact validation: **20 tests passed**, and `ruff check .` is clean. Tests cover:
+Current artifact validation: **24 tests passed**, and `ruff check .` is clean. Tests cover:
 
 - 640-D G1 encoder contract
 - 930-D history and 994-D dynamic input
 - FSQ gradients/shapes
 - MuJoCo/Isaac joint reorder round-trip
 - BONES filtering/resampling
+- deterministic, balanced, mirror-safe easy-curriculum selection
 - adaptive failure sampling
 - flow-matching action masks and sampling
 - PPO + auxiliary update
@@ -438,11 +447,11 @@ Current artifact validation: **20 tests passed**, and `ruff check .` is clean. T
 - the real MuJoCo-Warp 3.12 API, batched torque mapping, physics variants, contact/overflow fields
 - exact 50-Hz FK recomputation and an end-to-end stationary tracking/frame-time rollout
 
-The repository still does not contain the user's exact G1 MJCF, and the local Google Drive BONES
-archives are macOS cloud placeholders. Therefore a physical MJWarp rollout and real BONES FK replay
-cannot be claimed from this checkout. The Colab notebook runs those remaining gates against the real
-Drive bytes and supplied MJCF; the package fails loudly on missing joints, actuators, bodies, FK
-cache, contact-force buffers, capacity overflow, non-finite training values, or optional dependencies.
+The official NVIDIA G1 29-DOF MJCF/mesh bundle and BONES archives are staged in the user's Drive,
+but a physical CUDA MJWarp rollout and full real-BONES FK replay are still Colab runtime gates rather
+than claims made from this local checkout. The notebook runs those gates against the real Drive bytes
+and supplied MJCF; the package fails loudly on missing joints, actuators, bodies, FK cache,
+contact-force buffers, capacity overflow, non-finite training values, or optional dependencies.
 
 ## Primary references
 
