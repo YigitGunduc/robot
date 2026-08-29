@@ -19,9 +19,25 @@ from pathlib import Path
 TASK = "Mjlab-SonicLite-Tracking-Flat-Unitree-G1"
 
 
-def run(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
+def run(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> int:
     print("+", " ".join(command), flush=True)
-    subprocess.run(command, cwd=cwd, env=env, check=True)
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert process.stdout is not None
+    for line in process.stdout:
+        print(line, end="", flush=True)
+    return_code = process.wait()
+    print(f"RETURN CODE ({command[0]}): {return_code}", flush=True)
+    if return_code != 0:
+        raise subprocess.CalledProcessError(return_code, command)
+    return return_code
 
 
 def select_clips(args: argparse.Namespace, repo: Path) -> Path:

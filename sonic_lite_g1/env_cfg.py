@@ -74,14 +74,12 @@ def sonic_lite_g1_env_cfg(*, play: bool = False):
         concatenate_terms=True,
         enable_corruption=False,
         history_length=1,
-        history_ordering="time",
     )
     cfg.observations["proprio"] = ObservationGroupCfg(
         terms=proprio_terms,
         concatenate_terms=True,
         enable_corruption=not play,
         history_length=10,
-        history_ordering="time",
     )
 
     # The stock critic is intentionally left privileged/asymmetric. It now sees
