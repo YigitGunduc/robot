@@ -21,13 +21,14 @@ memory-mapped packing, MJWarp benchmarking, staged SONIC training/evaluation, fr
 and GR00T-Lite training. Full training toggles default to off so a missing/wrong MJCF cannot start an
 expensive run accidentally.
 
-The notebook defaults to a deterministic `easy_512` curriculum: conservative standing-idle,
-forward-walking, turning, and simple gesture clips with neutral poses, no props, and no complex or
-high-impact actions. On its first run it materializes those clips from the completed full 30-Hz
-cache and atomically saves a compact Drive cache. Later Colab sessions restore only the compact
-cache. Subset-packed data, videos, checkpoints, metrics, and token datasets are namespaced with
-`easy_512`, so they cannot be mistaken for full-BONES results. Use this curriculum to validate the
-entire training path, then increase the subset size before moving to full BONES.
+The notebook defaults to a deterministic `easy_v2_512` curriculum: conservative forward-walking,
+low-angle turning, and simple gesture clips with neutral poses. It excludes props, crossed-arm
+references, backward locomotion, and complex/high-impact actions. On its first run it materializes
+those clips from the completed full 30-Hz cache and atomically saves a compact Drive cache. Later
+Colab sessions restore only the compact cache. Subset-packed data, videos, checkpoints, metrics, and
+token datasets are namespaced with `easy_v2_512`, so they cannot be mistaken for full-BONES results.
+Use this curriculum to validate the entire training path, then increase the subset size before moving
+to full BONES.
 
 ## What is implemented
 
@@ -428,7 +429,7 @@ Do not trust aggregate success alone; report per motion family so standing/walki
 pytest -q
 ```
 
-Current artifact validation: **24 tests passed**, and `ruff check .` is clean. Tests cover:
+Current artifact validation: **26 tests passed**, and `ruff check .` is clean. Tests cover:
 
 - 640-D G1 encoder contract
 - 930-D history and 994-D dynamic input

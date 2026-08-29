@@ -11,6 +11,7 @@ from gear_sonic_mjx.g1_parameters import (
     G1_MUJOCO_JOINT_NAMES,
     SONIC_TRACKED_BODY_NAMES,
 )
+from gear_sonic_mjx.preflight import _quaternion_angle_error
 from scripts.render_reference_motion import ensure_offscreen_framebuffer
 
 
@@ -85,6 +86,12 @@ def test_reference_renderer_expands_offscreen_framebuffer(tmp_path: Path):
     ensure_offscreen_framebuffer(model, 320, 240)
     assert model.vis.global_.offwidth >= 960
     assert model.vis.global_.offheight >= 720
+
+
+def test_float32_fk_quaternion_round_trip_stays_below_preflight_tolerance():
+    quaternion = np.asarray([[0.18257418, 0.36514837, 0.5477226, 0.73029673]])
+    cached = quaternion.astype(np.float32)
+    assert _quaternion_angle_error(quaternion, cached).item() < 1e-6
 
 
 def test_resampled_fk_is_recomputed_from_final_joint_pose(tmp_path: Path):

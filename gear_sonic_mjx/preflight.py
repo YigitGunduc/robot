@@ -186,6 +186,23 @@ def _sample_indices(total: int, maximum: int) -> list[int]:
     return sorted(set(np.linspace(0, total - 1, maximum).round().astype(int).tolist()))
 
 
+def _quaternion_angle_error(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    """Sign-invariant quaternion angle with explicit normalization.
+
+    FK caches are float32 while MuJoCo evaluates FK in float64. A raw dot product of otherwise
+    identical stored quaternions can therefore be slightly below one and create a false angular
+    error of roughly 1e-3 radians.
+    """
+    # Cast before the norm as NumPy otherwise accumulates a float32 input in float32.
+    left = np.asarray(left, dtype=np.float64)
+    right = np.asarray(right, dtype=np.float64)
+    left_norm = np.linalg.norm(left, axis=-1)
+    right_norm = np.linalg.norm(right, axis=-1)
+    denominator = np.maximum(left_norm * right_norm, np.finfo(np.float64).tiny)
+    dot = np.abs(np.sum(left * right, axis=-1)) / denominator
+    return 2.0 * np.arccos(np.clip(dot, 0.0, 1.0))
+
+
 def validate_motion_library(
     root: str | Path,
     mjcf_path: str | Path,
@@ -245,6 +262,7 @@ def validate_motion_library(
         "max_contact_penetration_m": 0.0,
         "minimum_tracked_body_origin_z_m": float("inf"),
     }
+    worst_contact: dict[str, object] | None = None
     sampled = _sample_indices(len(library), max_clips)
     for motion_id in sampled:
         clip: MotionClip = library._load(motion_id)
@@ -303,13 +321,42 @@ def validate_motion_library(
             data.qpos[qadr] = clip.joint_pos[frame]
             mujoco.mj_forward(model, data)
             if data.ncon:
-                penetration = max(
-                    0.0,
-                    -min(float(data.contact[index].dist) for index in range(data.ncon)),
+                contact_index = min(
+                    range(data.ncon), key=lambda index: float(data.contact[index].dist)
                 )
-                maxima["max_contact_penetration_m"] = max(
-                    maxima["max_contact_penetration_m"], penetration
-                )
+                contact = data.contact[contact_index]
+                penetration = max(0.0, -float(contact.dist))
+                if penetration > maxima["max_contact_penetration_m"]:
+                    geom1, geom2 = int(contact.geom1), int(contact.geom2)
+                    body1, body2 = (
+                        int(model.geom_bodyid[geom1]),
+                        int(model.geom_bodyid[geom2]),
+                    )
+                    maxima["max_contact_penetration_m"] = penetration
+                    worst_contact = {
+                        "motion_id": int(motion_id),
+                        "motion_name": clip.name,
+                        "frame": int(frame),
+                        "time_s": float(frame / clip.fps),
+                        "penetration_m": penetration,
+                        "kind": "ground" if 0 in {body1, body2} else "self",
+                        "geom1": mujoco.mj_id2name(
+                            model, mujoco.mjtObj.mjOBJ_GEOM, geom1
+                        )
+                        or f"geom#{geom1}",
+                        "geom2": mujoco.mj_id2name(
+                            model, mujoco.mjtObj.mjOBJ_GEOM, geom2
+                        )
+                        or f"geom#{geom2}",
+                        "body1": mujoco.mj_id2name(
+                            model, mujoco.mjtObj.mjOBJ_BODY, body1
+                        )
+                        or "world",
+                        "body2": mujoco.mj_id2name(
+                            model, mujoco.mjtObj.mjOBJ_BODY, body2
+                        )
+                        or "world",
+                    }
             pos_error = np.linalg.norm(
                 data.xpos[body_ids] - clip.body_pos[frame, ref_idx], axis=-1
             )
@@ -320,12 +367,9 @@ def validate_motion_library(
             maxima["fk_position_error_m"] = max(
                 maxima["fk_position_error_m"], float(np.max(pos_error))
             )
-            dot = np.abs(
-                np.sum(
-                    data.xquat[body_ids] * clip.body_quat_wxyz[frame, ref_idx], axis=-1
-                )
+            angle = _quaternion_angle_error(
+                data.xquat[body_ids], clip.body_quat_wxyz[frame, ref_idx]
             )
-            angle = 2.0 * np.arccos(np.clip(dot, 0.0, 1.0))
             maxima["fk_orientation_error_rad"] = max(
                 maxima["fk_orientation_error_rad"], float(np.max(angle))
             )
@@ -348,8 +392,10 @@ def validate_motion_library(
     }
     for name, threshold in sanity_limits.items():
         if maxima[name] > threshold:
+            detail = f"; worst_contact={worst_contact}" if "contact" in name else ""
             report.error(
-                f"motion {name}={maxima[name]:.6g} exceeds sanity limit {threshold:.6g}"
+                f"motion {name}={maxima[name]:.6g} exceeds sanity limit "
+                f"{threshold:.6g}{detail}"
             )
     if maxima["minimum_tracked_body_origin_z_m"] < -0.05:
         report.error(
@@ -364,4 +410,5 @@ def validate_motion_library(
         "sampled_clips": len(sampled),
         "target_fps": cfg.motion.target_fps,
         **maxima,
+        "worst_contact": worst_contact,
     }

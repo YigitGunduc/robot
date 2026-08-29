@@ -14,8 +14,10 @@ import pandas as pd
 from gear_sonic_mjx.data_process.bones import MotionClip, should_filter_out
 from gear_sonic_mjx.data_process.splits import mirror_group_key
 
-EASY_MOTION_CLASSES = ("idle", "walk", "turn", "gesture")
+EASY_MOTION_CLASSES = ("walk", "turn", "gesture")
 _FORBIDDEN_EASY_TERMS = (
+    "arms_crossed",
+    "backward",
     "jog",
     "jump",
     "run",
@@ -41,6 +43,7 @@ _FORBIDDEN_EASY_TERMS = (
     "sit",
     "chair",
     "crutch",
+    "crossed_arms",
     "bottle",
     "phone",
     "object",
@@ -102,12 +105,6 @@ def easy_motion_class(row: Mapping[str, object]) -> str | None:
         return None
 
     if (
-        "idle" in filename
-        and category in {"baseline", "basic locomotion neutral"}
-        and movement in {"standing idle", "standing", "gesture", "action", "transition"}
-    ):
-        return "idle"
-    if (
         category == "basic locomotion neutral"
         and movement == "walking"
         and ("walk_ff" in filename or "walk_forward" in filename)
@@ -116,6 +113,7 @@ def easy_motion_class(row: Mapping[str, object]) -> str | None:
     if (
         category == "basic locomotion neutral"
         and movement in {"turning", "walking, turning"}
+        and "turn" in combined
         and "270" not in filename
         and "360" not in filename
     ):
@@ -280,7 +278,7 @@ def build_easy_subset_manifest(
         for motion_class in EASY_MOTION_CLASSES
     }
     return {
-        "version": 1,
+        "version": 2,
         "preset": "easy",
         "seed": int(seed),
         "max_clips": int(max_clips),

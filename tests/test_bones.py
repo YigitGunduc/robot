@@ -12,6 +12,7 @@ from gear_sonic_mjx.data_process.bones import (
 from gear_sonic_mjx.data_process.splits import motion_group_key
 from gear_sonic_mjx.data_process.subset import (
     build_easy_subset_manifest,
+    easy_motion_class,
     materialize_subset,
 )
 
@@ -52,7 +53,6 @@ def test_easy_subset_is_deterministic_balanced_and_mirror_safe(tmp_path):
     motions = tmp_path / "motions"
     rows = []
     specs = {
-        "idle": ("crossed_arms_idle_R", "Baseline", "standing"),
         "walk": (
             "walk_ff_loop_180_R_normal_pace",
             "Basic Locomotion Neutral",
@@ -127,4 +127,30 @@ def test_bones_terminal_m_mirror_grouping():
     )
     assert motion_group_key("walk_ff_001__A001.npz") == motion_group_key(
         "walk_ff_001__A014_M.npz"
+    )
+
+
+def test_easy_subset_rejects_crossed_arms_and_backward_turn_false_positives():
+    base = {
+        "category": "Basic Locomotion Neutral",
+        "content_type_of_movement": "walking, turning",
+        "content_body_position": "standing",
+        "content_short_description": "turning while walking",
+        "content_props": "0",
+        "content_complex_action": 0,
+        "is_neutral": 1.0,
+        "move_duration_frames": 300,
+    }
+    assert (
+        easy_motion_class(
+            {**base, "filename": "crossed_arms_idle_turn_045_R_001__A001"}
+        )
+        is None
+    )
+    assert (
+        easy_motion_class({**base, "filename": "turn_walk_backward_045_R_001__A001"})
+        is None
+    )
+    assert (
+        easy_motion_class({**base, "filename": "turn_walk_045_R_001__A001"}) == "turn"
     )

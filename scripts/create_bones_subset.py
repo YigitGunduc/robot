@@ -34,7 +34,7 @@ def main() -> None:
     manifest_path = Path(args.manifest)
     if manifest_path.is_file():
         manifest = json.loads(manifest_path.read_text())
-        if manifest.get("version") != 1 or manifest.get("preset") != "easy":
+        if manifest.get("version") != 2 or manifest.get("preset") != "easy":
             raise ValueError(f"unsupported existing subset manifest: {manifest_path}")
         if int(manifest.get("max_clips", -1)) != args.max_clips:
             raise ValueError(
