@@ -28,6 +28,7 @@ def main() -> int:
     parser.add_argument("--motion-file", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--video-length", type=int, default=600)
+    parser.add_argument("--device", default=None, help="Rendering device, e.g. cuda:0 or cpu")
     args = parser.parse_args()
 
     checkpoint = args.checkpoint.expanduser().resolve()
@@ -37,10 +38,12 @@ def main() -> int:
     if not motion_file.exists():
         raise SystemExit(f"Motion file does not exist: {motion_file}")
 
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""
     os.environ["MUJOCO_GL"] = "egl"
     configure_torch_backends()
-    device = "cpu"
+    device = args.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
+    if device.startswith("cuda"):
+        os.environ["MUJOCO_EGL_DEVICE_ID"] = "0"
+    print(f"render device: {device}", flush=True)
 
     env_cfg = load_env_cfg(TASK, play=True)
     env_cfg.scene.num_envs = 1
