@@ -81,13 +81,30 @@ def convert_and_pack(args: argparse.Namespace, selected_file: Path, repo: Path) 
 
     for index, source in enumerate(selected):
         source_path = Path(source)
-        cached_npz = next(npz_dir.glob(f"*_{source_path.stem}.npz"), None)
+        cached_npz = next(
+            (
+                candidate
+                for candidate in args.work_dir.rglob("*.npz")
+                if candidate.name.endswith(f"_{source_path.stem}.npz")
+                or candidate.name == f"{source_path.stem}.npz"
+            ),
+            None,
+        )
         if cached_npz is not None:
             print(f"reusing cached NPZ: {cached_npz}", flush=True)
             selected_npz_files.append(cached_npz)
             continue
         stem = f"{index:04d}_{source_path.stem}"
-        converted_csv = csv_dir / f"{stem}.csv"
+        cached_csv = next(
+            (
+                candidate
+                for candidate in args.work_dir.rglob("*.csv")
+                if candidate.name.endswith(f"_{source_path.stem}.csv")
+                or candidate.name == f"{source_path.stem}.csv"
+            ),
+            None,
+        )
+        converted_csv = cached_csv or (csv_dir / f"{stem}.csv")
         converted_npz = npz_dir / f"{stem}.npz"
 
         if not converted_csv.exists():
