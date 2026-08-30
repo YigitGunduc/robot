@@ -141,6 +141,8 @@ def convert_and_pack(args: argparse.Namespace, selected_file: Path, repo: Path) 
                         str(args.input_fps),
                         "--output-fps",
                         "50",
+                        "--device",
+                        "cuda:0",
                         "--render",
                         "False",
                     ],
@@ -204,13 +206,19 @@ def reuse_clean_packed_motion(args: argparse.Namespace, selected_file: Path) -> 
         if any(stem == selected or stem.endswith(f"_{selected}") for selected in selected_stems):
             keep.append(index)
 
-    if len(keep) != len(selected_stems):
+    if not keep:
         print(
-            f"existing packed motion has {len(keep)}/{len(selected_stems)} clean selected clips; "
+            "existing packed motion has no clean selected clips; "
             "falling back to per-clip conversion",
             flush=True,
         )
         return None
+    if len(keep) != len(selected_stems):
+        print(
+            f"reusing {len(keep)}/{len(selected_stems)} clean clips from the existing pack; "
+            "missing clips will not be recomputed",
+            flush=True,
+        )
 
     with np.load(packed, allow_pickle=False) as source:
         starts = np.asarray(source["clip_starts"], dtype=np.int64)
