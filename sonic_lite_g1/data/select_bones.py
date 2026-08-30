@@ -21,7 +21,7 @@ NVIDIA_REJECT = (
 
 # Extra conservative V1 exclusions.  We want boring free-space locomotion only.
 V1_REJECT = (
-    "jump", "hop", "leap", "flip", "roll", "fall", "crawl", "kneel", "dance",
+    "inj", "injured", "jump", "hop", "leap", "flip", "roll", "fall", "crawl", "kneel", "dance",
     "kick", "punch", "throw", "catch", "carry", "crate", "box", "object", "push",
     "pull", "lift", "car", "vehicle", "door", "weapon", "ball", "sport", "vault",
     "rope", "bench", "sofa", "desk", "shelf", "edge",

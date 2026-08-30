@@ -77,9 +77,15 @@ def convert_and_pack(args: argparse.Namespace, selected_file: Path, repo: Path) 
     npz_dir = args.work_dir / "converted_npz"
     csv_dir.mkdir(parents=True, exist_ok=True)
     npz_dir.mkdir(parents=True, exist_ok=True)
+    selected_npz_files: list[Path] = []
 
     for index, source in enumerate(selected):
         source_path = Path(source)
+        cached_npz = next(npz_dir.glob(f"*_{source_path.stem}.npz"), None)
+        if cached_npz is not None:
+            print(f"reusing cached NPZ: {cached_npz}", flush=True)
+            selected_npz_files.append(cached_npz)
+            continue
         stem = f"{index:04d}_{source_path.stem}"
         converted_csv = csv_dir / f"{stem}.csv"
         converted_npz = npz_dir / f"{stem}.npz"
@@ -137,15 +143,18 @@ def convert_and_pack(args: argparse.Namespace, selected_file: Path, repo: Path) 
                     "mjlab conversion completed but /tmp/motion.npz was not found"
                 )
             shutil.copy2(generated, converted_npz)
+        selected_npz_files.append(converted_npz)
 
     packed = args.work_dir / "stand_walk.npz"
+    selected_npz_list = args.work_dir / "selected_npz.txt"
+    selected_npz_list.write_text("\n".join(str(path) for path in selected_npz_files) + "\n")
     run(
         [
             sys.executable,
             "-m",
             "sonic_lite_g1.data.pack_motions",
-            "--dir",
-            str(npz_dir),
+            "--list",
+            str(selected_npz_list),
             "--out",
             str(packed),
         ],
@@ -204,7 +213,7 @@ def main() -> None:
     parser.add_argument("--max-crouch", type=int, default=0)
     parser.add_argument("--max-jog", type=int, default=0)
     parser.add_argument("--input-fps", type=float, default=120.0)
-    parser.add_argument("--num-envs", type=int, default=1024)
+    parser.add_argument("--num-envs", type=int, default=256)
     parser.add_argument("--max-iterations", type=int, default=5000)
     parser.add_argument("--video-length", type=int, default=600)
     args = parser.parse_args()
@@ -233,7 +242,7 @@ def main() -> None:
         "--agent.max-iterations",
         str(args.max_iterations),
         "--video",
-        "True",
+        "False",
     ]
     run(train_command, cwd=repo, env=env)
 
