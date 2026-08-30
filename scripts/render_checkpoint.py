@@ -4,11 +4,19 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import os
-import shutil
-import subprocess
-import sys
 from pathlib import Path
+
+import mediapy as media
+import numpy as np
+import torch
+from mjlab.envs import ManagerBasedRlEnv
+from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
+from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
+from mjlab.utils.torch import configure_torch_backends
+
+import sonic_lite_g1  # noqa: F401  # Register the local task.
 
 
 TASK = "Mjlab-SonicLite-Tracking-Flat-Unitree-G1"
@@ -29,43 +37,48 @@ def main() -> int:
     if not motion_file.exists():
         raise SystemExit(f"Motion file does not exist: {motion_file}")
 
-    env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = ""
-    env["MUJOCO_GL"] = "egl"
-    command = [
-        "play",
-        TASK,
-        "--checkpoint-file",
-        str(checkpoint),
-        "--motion-file",
-        str(motion_file),
-        "--num-envs",
-        "1",
-        "--device",
-        "cpu",
-        "--video",
-        "True",
-        "--video-length",
-        str(args.video_length),
-    ]
-    print("+", " ".join(command), flush=True)
-    result = subprocess.run(command, env=env, check=False)
-    print(f"RETURN CODE (play): {result.returncode}", flush=True)
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    os.environ["MUJOCO_GL"] = "egl"
+    configure_torch_backends()
+    device = "cpu"
 
-    videos = list(checkpoint.parent.rglob("*.mp4"))
-    if result.returncode == 0 and videos:
-        latest = max(videos, key=lambda path: path.stat().st_mtime)
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(latest, args.output)
-        print(f"copied rendered MP4: {args.output}", flush=True)
-        return 0
+    env_cfg = load_env_cfg(TASK, play=True)
+    env_cfg.scene.num_envs = 1
+    motion_cmd = env_cfg.commands["motion"]
+    motion_cmd.motion_file = str(motion_file)
+    agent_cfg = load_rl_cfg(TASK)
 
-    print(
-        "Rendering did not produce an MP4. Training/checkpoint files are unchanged.",
-        file=sys.stderr,
-        flush=True,
-    )
-    return result.returncode or 1
+    # This is deliberately headless: it never starts mjlab's interactive
+    # Native/Viser viewer, which is the component that can segfault in Colab.
+    env = ManagerBasedRlEnv(cfg=env_cfg, device=device, render_mode="rgb_array")
+    env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+    runner_cls = load_runner_cls(TASK)
+    runner = (runner_cls or MjlabOnPolicyRunner)(env, asdict(agent_cfg), device=device)
+    runner.load(str(checkpoint), load_cfg={"actor": True}, strict=True, map_location=device)
+    policy = runner.get_inference_policy(device=device)
+
+    frames: list[np.ndarray] = []
+    obs = env.get_observations()
+    with torch.inference_mode():
+        for index in range(args.video_length):
+            actions = policy(obs)
+            obs, _, _, _ = env.step(actions)
+            frame = env.unwrapped.render()
+            if frame is None:
+                raise RuntimeError("The environment did not return an RGB frame")
+            frame = frame[0] if frame.ndim == 4 else frame
+            frame = np.asarray(frame)
+            if frame.dtype != np.uint8:
+                frame = (np.clip(frame, 0, 1) * 255).astype(np.uint8)
+            frames.append(frame)
+            if (index + 1) % 100 == 0:
+                print(f"rendered {index + 1}/{args.video_length} frames", flush=True)
+    env.close()
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    media.write_video(str(args.output), frames, fps=50)
+    print(f"wrote rendered MP4: {args.output}", flush=True)
+    return 0
 
 
 if __name__ == "__main__":
