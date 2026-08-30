@@ -14,13 +14,14 @@ except ModuleNotFoundError as exc:
         raise
 else:
     from .env_cfg import sonic_lite_g1_env_cfg
-    from .rl_cfg import sonic_lite_ppo_runner_cfg
+    from .rl_cfg import SonicLiteOnPolicyRunner, sonic_lite_ppo_runner_cfg
 
     register_mjlab_task(
         task_id=TASK_ID,
         env_cfg=sonic_lite_g1_env_cfg(),
         play_env_cfg=sonic_lite_g1_env_cfg(play=True),
         rl_cfg=sonic_lite_ppo_runner_cfg(),
+        runner_cls=SonicLiteOnPolicyRunner,
     )
 
 __all__ = ["TASK_ID"]

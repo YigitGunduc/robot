@@ -2,7 +2,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
+from mjlab.rl import (
+    MjlabOnPolicyRunner,
+    RslRlModelCfg,
+    RslRlOnPolicyRunnerCfg,
+    RslRlPpoAlgorithmCfg,
+)
+
+
+class SonicLiteOnPolicyRunner(MjlabOnPolicyRunner):
+    """Local-motion compatibility adapter for mjlab's tracking launcher."""
+
+    def __init__(self, env, train_cfg, log_dir=None, device="cpu", *, registry_name=None):
+        del registry_name
+        super().__init__(env, train_cfg, log_dir, device)
 
 
 @dataclass(kw_only=True)
