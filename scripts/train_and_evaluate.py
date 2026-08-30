@@ -22,7 +22,13 @@ import torch
 TASK = "Mjlab-SonicLite-Tracking-Flat-Unitree-G1"
 
 
-def run(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> int:
+def run(
+    command: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    check: bool = True,
+) -> int:
     print("+", " ".join(command), flush=True)
     process = subprocess.Popen(
         command,
@@ -38,7 +44,7 @@ def run(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | No
         print(line, end="", flush=True)
     return_code = process.wait()
     print(f"RETURN CODE ({command[0]}): {return_code}", flush=True)
-    if return_code != 0:
+    if return_code != 0 and check:
         raise subprocess.CalledProcessError(return_code, command)
     return return_code
 
@@ -268,6 +274,18 @@ def newest_checkpoint(repo: Path) -> Path:
     return max(checkpoints, key=lambda path: path.stat().st_mtime)
 
 
+def stage_resume_checkpoint(repo: Path, checkpoint: Path) -> tuple[str, str]:
+    """Place an external checkpoint where mjlab's resume resolver can load it."""
+    if not checkpoint.exists():
+        raise FileNotFoundError(f"Resume checkpoint not found: {checkpoint}")
+    run_name = f"resume_{checkpoint.stem}"
+    run_dir = repo / "logs" / "rsl_rl" / "sonic_lite_g1" / run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    staged = run_dir / checkpoint.name
+    shutil.copy2(checkpoint, staged)
+    return run_name, staged.name
+
+
 def summarize_tensorboard(repo: Path, output: Path) -> None:
     """Write the last/min/max scalar values from the training event files."""
     try:
@@ -303,8 +321,18 @@ def summarize_tensorboard(repo: Path, output: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset-root", type=Path, required=True)
+    parser.add_argument("--dataset-root", type=Path)
     parser.add_argument("--work-dir", type=Path, default=Path("data/colab_run"))
+    parser.add_argument(
+        "--motion-file",
+        type=Path,
+        help="Use an already-packed NPZ and skip dataset selection/conversion.",
+    )
+    parser.add_argument(
+        "--resume-checkpoint",
+        type=Path,
+        help="Resume PPO from this checkpoint and train max-iterations more.",
+    )
     parser.add_argument("--max-stand", type=int, default=30)
     parser.add_argument("--max-walk", type=int, default=100)
     parser.add_argument("--max-turn", type=int, default=0)
@@ -314,16 +342,29 @@ def main() -> None:
     parser.add_argument("--num-envs", type=int, default=256)
     parser.add_argument("--max-iterations", type=int, default=5000)
     parser.add_argument("--video-length", type=int, default=600)
+    parser.add_argument(
+        "--render-video",
+        action="store_true",
+        help="Render after training. Rendering is optional and does not fail training.",
+    )
     args = parser.parse_args()
 
     repo = Path(__file__).resolve().parents[1]
     args.work_dir.mkdir(parents=True, exist_ok=True)
-    args.csv_root = args.dataset_root / "g1" / "csv"
-    if not args.csv_root.exists():
-        raise SystemExit(
-            f"Missing extracted BONES CSV directory: {args.csv_root}\n"
-            "Extract g1.tar.gz under the dataset root first."
-        )
+    if args.motion_file is not None:
+        motion_file = args.motion_file.expanduser().resolve()
+        if not motion_file.exists():
+            raise SystemExit(f"Packed motion file does not exist: {motion_file}")
+        print(f"Using cached packed motion without dataset processing: {motion_file}")
+    else:
+        if args.dataset_root is None:
+            raise SystemExit("Provide --dataset-root, or use --motion-file for a cached NPZ.")
+        args.csv_root = args.dataset_root / "g1" / "csv"
+        if not args.csv_root.exists():
+            raise SystemExit(
+                f"Missing extracted BONES CSV directory: {args.csv_root}\n"
+                "Extract g1.tar.gz under the dataset root first."
+            )
 
     gpu_available = torch.cuda.is_available()
     if gpu_available:
@@ -333,10 +374,11 @@ def main() -> None:
         os.environ.pop("CUDA_VISIBLE_DEVICES", None)
         print("CUDA unavailable: using CPU", flush=True)
 
-    selected = select_clips(args, repo)
-    motion_file = reuse_clean_packed_motion(args, selected)
-    if motion_file is None:
-        motion_file = convert_and_pack(args, selected, repo)
+    if args.motion_file is None:
+        selected = select_clips(args, repo)
+        motion_file = reuse_clean_packed_motion(args, selected)
+        if motion_file is None:
+            motion_file = convert_and_pack(args, selected, repo)
 
     env = os.environ.copy()
     env.setdefault("MUJOCO_GL", "egl")
@@ -353,36 +395,69 @@ def main() -> None:
         "False",
     ]
     train_command.extend(["--gpu-ids", "[0]" if gpu_available else "None"])
+    if args.resume_checkpoint is not None:
+        load_run, load_checkpoint = stage_resume_checkpoint(
+            repo, args.resume_checkpoint.expanduser().resolve()
+        )
+        train_command.extend(
+            [
+                "--agent.resume",
+                "True",
+                "--agent.load-run",
+                load_run,
+                "--agent.load-checkpoint",
+                load_checkpoint,
+            ]
+        )
     run(train_command, cwd=repo, env=env)
 
     checkpoint = newest_checkpoint(repo)
     print("checkpoint:", checkpoint)
+    saved_checkpoint = args.work_dir / "latest_checkpoint.pt"
+    shutil.copy2(checkpoint, saved_checkpoint)
+    print(f"copied checkpoint: {saved_checkpoint}")
     summarize_tensorboard(repo, args.work_dir / "training_metrics.json")
 
-    play_command = [
-        "play",
-        TASK,
-        "--checkpoint-file",
-        str(checkpoint),
-        "--motion-file",
-        str(motion_file),
-        "--num-envs",
-        "1",
-        "--video",
-        "True",
-        "--video-length",
-        str(args.video_length),
-    ]
-    run(play_command, cwd=repo, env=env)
-
-    videos = list((repo / "logs").rglob("*.mp4"))
-    if videos:
-        latest_video = max(videos, key=lambda path: path.stat().st_mtime)
-        target = args.work_dir / "trained_action.mp4"
-        shutil.copy2(latest_video, target)
-        print(f"copied rendered MP4: {target}")
+    if args.render_video:
+        # Colab's GPU viewer can segfault even after successful training. CPU
+        # playback with EGL is slower but avoids tying evaluation to training.
+        play_env = env.copy()
+        play_env["CUDA_VISIBLE_DEVICES"] = ""
+        play_env["MUJOCO_GL"] = "egl"
+        play_command = [
+            "play",
+            TASK,
+            "--checkpoint-file",
+            str(checkpoint),
+            "--motion-file",
+            str(motion_file),
+            "--num-envs",
+            "1",
+            "--device",
+            "cpu",
+            "--video",
+            "True",
+            "--video-length",
+            str(args.video_length),
+        ]
+        render_return_code = run(play_command, cwd=repo, env=play_env, check=False)
+        if render_return_code != 0:
+            print(
+                f"WARNING: rendering failed with return code {render_return_code}; "
+                "training completed successfully.",
+                flush=True,
+            )
+        else:
+            videos = list((repo / "logs").rglob("*.mp4"))
+            if videos:
+                latest_video = max(videos, key=lambda path: path.stat().st_mtime)
+                target = args.work_dir / "trained_action.mp4"
+                shutil.copy2(latest_video, target)
+                print(f"copied rendered MP4: {target}")
+            else:
+                print("No MP4 found under logs/")
     else:
-        print("No MP4 found under logs/")
+        print("Skipping video rendering; use --render-video after training.")
 
 
 if __name__ == "__main__":
