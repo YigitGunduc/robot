@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import torch
 
 
 TASK = "Mjlab-SonicLite-Tracking-Flat-Unitree-G1"
@@ -142,7 +143,7 @@ def convert_and_pack(args: argparse.Namespace, selected_file: Path, repo: Path) 
                         "--output-fps",
                         "50",
                         "--device",
-                        "cuda:0",
+                        "cuda:0" if torch.cuda.is_available() else "cpu",
                         "--render",
                         "False",
                     ],
@@ -324,6 +325,14 @@ def main() -> None:
             "Extract g1.tar.gz under the dataset root first."
         )
 
+    gpu_available = torch.cuda.is_available()
+    if gpu_available:
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+        print("CUDA available: using cuda:0", flush=True)
+    else:
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        print("CUDA unavailable: using CPU", flush=True)
+
     selected = select_clips(args, repo)
     motion_file = reuse_clean_packed_motion(args, selected)
     if motion_file is None:
@@ -343,6 +352,7 @@ def main() -> None:
         "--video",
         "False",
     ]
+    train_command.extend(["--gpu-ids", "[0]" if gpu_available else "None"])
     run(train_command, cwd=repo, env=env)
 
     checkpoint = newest_checkpoint(repo)
