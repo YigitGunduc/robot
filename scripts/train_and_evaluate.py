@@ -15,6 +15,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
+
 
 TASK = "Mjlab-SonicLite-Tracking-Flat-Unitree-G1"
 
@@ -180,6 +182,76 @@ def convert_and_pack(args: argparse.Namespace, selected_file: Path, repo: Path) 
     return packed
 
 
+def reuse_clean_packed_motion(args: argparse.Namespace, selected_file: Path) -> Path | None:
+    """Filter an existing packed motion file without rerunning FK conversion."""
+    packed = args.work_dir / "stand_walk.npz"
+    manifest = packed.with_suffix(packed.suffix + ".manifest.json")
+    if not packed.exists() or not manifest.exists():
+        return None
+
+    selected_payload = json.loads(selected_file.read_text())
+    selected_stems = {
+        Path(item["path"]).stem
+        for group in selected_payload["groups"].values()
+        for item in group
+    }
+    source_files = json.loads(manifest.read_text())["source_files"]
+    keep: list[int] = []
+    for index, source_file in enumerate(source_files):
+        stem = Path(source_file).stem
+        if "inj" in stem.lower() or "injured" in stem.lower():
+            continue
+        if any(stem == selected or stem.endswith(f"_{selected}") for selected in selected_stems):
+            keep.append(index)
+
+    if len(keep) != len(selected_stems):
+        print(
+            f"existing packed motion has {len(keep)}/{len(selected_stems)} clean selected clips; "
+            "falling back to per-clip conversion",
+            flush=True,
+        )
+        return None
+
+    with np.load(packed, allow_pickle=False) as source:
+        starts = np.asarray(source["clip_starts"], dtype=np.int64)
+        lengths = np.asarray(source["clip_lengths"], dtype=np.int64)
+        payload: dict[str, np.ndarray] = {}
+        for key in source.files:
+            if key in {"clip_starts", "clip_lengths"}:
+                continue
+            chunks = [
+                np.asarray(source[key])[starts[i] : starts[i] + lengths[i]]
+                for i in keep
+            ]
+            payload[key] = np.concatenate(chunks, axis=0)
+
+    new_starts: list[int] = []
+    cursor = 0
+    new_lengths: list[int] = []
+    for index in keep:
+        new_starts.append(cursor)
+        new_lengths.append(int(lengths[index]))
+        cursor += int(lengths[index])
+    payload["clip_starts"] = np.asarray(new_starts, dtype=np.int64)
+    payload["clip_lengths"] = np.asarray(new_lengths, dtype=np.int64)
+
+    clean_packed = args.work_dir / "clean_stand_walk.npz"
+    np.savez_compressed(clean_packed, **payload)
+    clean_packed.with_suffix(clean_packed.suffix + ".manifest.json").write_text(
+        json.dumps(
+            {
+                "source_files": [source_files[i] for i in keep],
+                "num_clips": len(keep),
+                "num_frames": cursor,
+                "filtered_from": str(packed),
+            },
+            indent=2,
+        )
+    )
+    print(f"reused {len(keep)} clean clips from existing packed motion: {clean_packed}")
+    return clean_packed
+
+
 def newest_checkpoint(repo: Path) -> Path:
     checkpoints = list((repo / "logs").rglob("model_*.pt"))
     if not checkpoints:
@@ -245,7 +317,9 @@ def main() -> None:
         )
 
     selected = select_clips(args, repo)
-    motion_file = convert_and_pack(args, selected, repo)
+    motion_file = reuse_clean_packed_motion(args, selected)
+    if motion_file is None:
+        motion_file = convert_and_pack(args, selected, repo)
 
     env = os.environ.copy()
     env.setdefault("MUJOCO_GL", "egl")
