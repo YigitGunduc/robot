@@ -6,11 +6,13 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 import os
+import sys
 from pathlib import Path
 
 import mediapy as media
 import numpy as np
 import torch
+import warp as wp
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
@@ -38,7 +40,12 @@ def main() -> int:
     if not motion_file.exists():
         raise SystemExit(f"Motion file does not exist: {motion_file}")
 
-    os.environ["MUJOCO_GL"] = "egl"
+    # Colab/Linux uses EGL; macOS needs the desktop GLFW backend for the
+    # offscreen renderer. Respect an explicit caller override.
+    os.environ.setdefault("MUJOCO_GL", "egl" if sys.platform.startswith("linux") else "glfw")
+    wp.config.kernel_cache_dir = os.environ.get(
+        "WARP_KERNEL_CACHE_DIR", "/tmp/sonic-lite-warp-cache"
+    )
     configure_torch_backends()
     device = args.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
     if device.startswith("cuda"):
