@@ -222,10 +222,14 @@ def reuse_clean_packed_motion(args: argparse.Namespace, selected_file: Path) -> 
         return None
     if len(keep) != len(selected_stems):
         print(
-            f"reusing {len(keep)}/{len(selected_stems)} clean clips from the existing pack; "
-            "missing clips will not be recomputed",
+            f"existing clean pack contains {len(keep)}/{len(selected_stems)} selected clips; "
+            "rebuilding the pack from cached individual NPZ files",
             flush=True,
         )
+        # A partial pack must not silently become the training dataset. The
+        # normal pack path below reuses converted NPZs when they are present,
+        # and only converts a clip if its cached artifact is genuinely absent.
+        return None
 
     with np.load(packed, allow_pickle=False) as source:
         starts = np.asarray(source["clip_starts"], dtype=np.int64)
